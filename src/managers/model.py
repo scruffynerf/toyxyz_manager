@@ -117,7 +117,9 @@ class ModelManagerWidget(BaseManagerWidget):
         self.preview_lbl.clicked.connect(self.on_preview_click)
         self.center_layout.addWidget(self.preview_lbl, 1)
         
-        center_btn_layout = QHBoxLayout()
+        # [Layout] 2x2 Grid for buttons
+        center_btn_layout = QGridLayout()
+        center_btn_layout.setSpacing(5)
         
         # [Feature] Copy ComfyUI Node
         self.btn_copy_node = QPushButton("📋 Copy Node")
@@ -127,13 +129,24 @@ class ModelManagerWidget(BaseManagerWidget):
         self.btn_replace = QPushButton("🖼️ Change Thumb")
         self.btn_replace.setToolTip("Change the thumbnail image for the selected model")
         self.btn_replace.clicked.connect(self.replace_thumbnail)
+        
         btn_open = QPushButton("📂 Open Folder")
         btn_open.setToolTip("Open the containing folder in File Explorer")
         btn_open.clicked.connect(self.open_current_folder)
         
-        center_btn_layout.addWidget(self.btn_copy_node)
-        center_btn_layout.addWidget(self.btn_replace)
-        center_btn_layout.addWidget(btn_open)
+        # [New Feature] Copy Relative Path
+        self.btn_copy_path = QPushButton("📋 Copy Path")
+        self.btn_copy_path.setToolTip("Copy file path relative to the registered root folder")
+        self.btn_copy_path.clicked.connect(self.copy_model_relative_path)
+        
+        # Row 0
+        center_btn_layout.addWidget(self.btn_copy_node, 0, 0)
+        center_btn_layout.addWidget(self.btn_replace, 0, 1)
+        
+        # Row 1
+        center_btn_layout.addWidget(btn_open, 1, 0)
+        center_btn_layout.addWidget(self.btn_copy_path, 1, 1)
+        
         self.center_layout.addLayout(center_btn_layout)
 
     def init_right_panel(self):
@@ -216,6 +229,54 @@ class ModelManagerWidget(BaseManagerWidget):
         msg = "Embedding copied!" if model_type == "embeddings" else "ComfyUI Node copied to clipboard!"
         self.show_status_message(msg, 3000)
         # Optional: Toast notification if available, but status bar is fine.
+
+    def copy_model_relative_path(self):
+        """
+        Copies the relative path of the selected model to the clipboard.
+        The path is relative to the currently selected root folder.
+        """
+        if not self.current_path or not os.path.exists(self.current_path):
+            self.show_status_message("No model selected or file not found.", 3000)
+            return
+
+        # Get Current Root Path
+        current_root_alias = self.folder_combo.currentText()
+        folder_config = self.directories.get(current_root_alias, {})
+        
+        # Determine actual root path
+        if isinstance(folder_config, dict):
+            # [Feature] First try to use the configured ComfyUI Root path
+            root_path = folder_config.get("comfy_root")
+            # Fallback to physical path if not configured
+            if not root_path:
+                root_path = folder_config.get("path")
+        else:
+            root_path = str(folder_config)
+            
+        if not root_path or not os.path.exists(root_path):
+             self.show_status_message(f"Error: Invalid root path for '{current_root_alias}'", 3000)
+             return
+
+        try:
+            # Calculate Relative Path
+            # commonpath might be safer? relpath is fine if under root.
+            # If cross-drive, relpath might fail or return absolute on some py versions/OS, 
+            # but usually safely returns abspath if no common root on Windows.
+            # However, user wants "ILXL\oneObsession..." if under "F:\SD_Model\Ckpt"
+            
+            rel_path = os.path.relpath(self.current_path, root_path)
+            
+            # Copy to Clipboard
+            clipboard = QApplication.clipboard()
+            clipboard.setText(rel_path)
+            
+            self.show_status_message(f"Relative path copied: {rel_path}", 3000)
+            
+        except ValueError:
+            # Can happen on Windows if paths are on different drives
+            self.show_status_message("Error: Paths are on different drives", 3000)
+        except Exception as e:
+            self.show_status_message(f"Error calculating path: {e}", 3000)
     
     def on_tree_select(self):
         items = self.tree.selectedItems()
