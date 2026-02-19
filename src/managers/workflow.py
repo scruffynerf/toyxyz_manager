@@ -2,11 +2,12 @@ import os
 import shutil
 import json
 import time
+import re
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QTextEdit, 
     QFormLayout, QGridLayout, QTabWidget, QStackedWidget, QMessageBox, QFileDialog,
-    QSplitter, QApplication
+    QSplitter, QApplication, QInputDialog
 )
 from PySide6.QtCore import Qt, QUrl, QMimeData, QTimer
 from PySide6.QtGui import QDrag, QPixmap, QPainter, QColor
@@ -58,22 +59,32 @@ class WorkflowManagerWidget(BaseManagerWidget):
         self.center_layout.addWidget(self.preview_lbl, 1)
         
         # Buttons
-        center_btn_layout = QHBoxLayout()
+        # [Refactor] Use QGridLayout for 2x2 arrangement
+        center_btn_layout = QGridLayout()
         
+        # Row 0
         self.btn_copy = QPushButton("📋 Copy")
         self.btn_copy.setToolTip("Copy workflow JSON to clipboard (Paste in ComfyUI)")
         self.btn_copy.clicked.connect(self.copy_workflow_to_clipboard)
-        center_btn_layout.addWidget(self.btn_copy)
+        center_btn_layout.addWidget(self.btn_copy, 0, 0)
 
-        self.btn_replace = QPushButton("🖼️ Change Thumb")
-        self.btn_replace.setToolTip("Change the thumbnail image for the selected workflow")
-        self.btn_replace.clicked.connect(self.replace_thumbnail)
-        center_btn_layout.addWidget(self.btn_replace)
+        # Renamed from btn_replace to btn_change_thumb to avoid confusion
+        self.btn_change_thumb = QPushButton("🖼️ Change Thumb")
+        self.btn_change_thumb.setToolTip("Change the thumbnail image for the selected workflow")
+        self.btn_change_thumb.clicked.connect(self.replace_thumbnail)
+        center_btn_layout.addWidget(self.btn_change_thumb, 0, 1)
         
+        # Row 1
         btn_open = QPushButton("📂 Open Folder")
         btn_open.setToolTip("Open the containing folder in File Explorer")
         btn_open.clicked.connect(self.open_current_folder)
-        center_btn_layout.addWidget(btn_open)
+        center_btn_layout.addWidget(btn_open, 1, 0)
+        
+        self.btn_replace_content = QPushButton("🔄 Replace")
+        self.btn_replace_content.setToolTip("Replace current workflow content with another JSON file")
+        self.btn_replace_content.clicked.connect(self.replace_workflow_content)
+        center_btn_layout.addWidget(self.btn_replace_content, 1, 1)
+
         self.center_layout.addLayout(center_btn_layout)
 
 
@@ -111,6 +122,7 @@ class WorkflowManagerWidget(BaseManagerWidget):
         type_ = item.data(0, Qt.UserRole + 1)
         
         if type_ == "file" and path:
+            if not os.path.exists(path): return
             self.current_path = path
             self._load_details(path)
             
@@ -287,6 +299,272 @@ class WorkflowManagerWidget(BaseManagerWidget):
         except Exception as e:
             self.show_status_message(f"Error: {e}", 3000)
 
+    def replace_workflow_content(self):
+        """
+        [New Feature] Replace the content of the currently selected workflow file 
+        with the content of another JSON file selected by the user.
+        """
+        if not hasattr(self, 'current_path') or not self.current_path or not os.path.exists(self.current_path):
+            QMessageBox.warning(self, "Warning", "No workflow selected.")
+            return
+
+        # 1. Select Source File
+        source_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Replacement Workflow (JSON)", "", "Workflow Files (*.json);;All Files (*)"
+        )
+        
+        if not source_path: return
+        if os.path.abspath(source_path) == os.path.abspath(self.current_path):
+            QMessageBox.information(self, "Info", "Source and target are the same file.")
+            return
+
+        # 2. Confirm Action
+        reply = QMessageBox.question(
+            self, "Confirm Replace", 
+            f"Are you sure you want to replace the content of:\n{os.path.basename(self.current_path)}\n\nWith content from:\n{os.path.basename(source_path)}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes: return
+
+        try:
+            # 3. Read Source Content
+            with open(source_path, 'r', encoding='utf-8') as f_src:
+                new_content = f_src.read()
+                
+            # Validate JSON
+            json.loads(new_content)
+            
+            # 4. Write to Target
+            with open(self.current_path, 'w', encoding='utf-8') as f_dst:
+                f_dst.write(new_content)
+                
+            self.show_status_message(f"Replaced content with {os.path.basename(source_path)}", 3000)
+            
+            # 5. Refresh UI
+            self._load_details(self.current_path)
+            
+        except json.JSONDecodeError:
+            QMessageBox.critical(self, "Error", "Selected file is not valid JSON.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to replace content: {e}")
+
+
+    # === Remove / Rename Feature ===
+
+    def init_left_bottom(self, layout):
+        """Override to add Remove/Rename buttons to the bottom of the left panel."""
+        btn_layout = QHBoxLayout()
+        
+        btn_remove = QPushButton("🗑️ Remove")
+        btn_remove.setToolTip("Permanently delete the selected workflow and its resources")
+        btn_remove.clicked.connect(self.remove_workflow)
+        
+        btn_rename = QPushButton("✏️ Rename")
+        btn_rename.setToolTip("Rename the selected workflow and its resources")
+        btn_rename.clicked.connect(self.rename_workflow)
+        
+        btn_layout.addWidget(btn_remove)
+        btn_layout.addWidget(btn_rename)
+        layout.addLayout(btn_layout)
+
+    def remove_workflow(self):
+        """
+        Permanently deletes the selected workflow and its associated resources.
+        Resources include:
+        - The workflow file itself (.json)
+        - Thumbnail/Preview files
+        - Cache directory (notes, examples)
+        """
+        if not self.current_path or not os.path.exists(self.current_path):
+            QMessageBox.warning(self, "Warning", "No workflow selected.")
+            return
+
+        filename = os.path.basename(self.current_path)
+        
+        # Confirm Delete
+        reply = QMessageBox.question(
+            self, "Confirm Delete", 
+            f"Are you sure you want to PERMANENTLY delete:\n{filename}\n\nThis will also delete:\n- Thumbnails/Previews\n- Notes & Metadata",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes: return
+
+        # 1. Unload resources
+        if hasattr(self, 'preview_lbl'): 
+            self.preview_lbl.clear_memory()
+            self.preview_lbl.set_media(None)
+        if hasattr(self, 'graph_viewer'):
+            self.graph_viewer.clear_graph()
+        if hasattr(self, 'tab_example'): 
+            self.tab_example.unload_current_examples()
+            
+        # Ensure image loader isn't holding it
+        if hasattr(self, 'image_loader_thread'):
+            self.image_loader_thread.remove_from_cache(self.current_path)
+            
+        QApplication.processEvents()
+
+        base_name = os.path.splitext(filename)[0]
+        dir_path = os.path.dirname(self.current_path)
+        
+        deleted_items = []
+        errors = []
+
+        try:
+            # 2. Delete Cache Directory
+            cache_dir = calculate_structure_path(self.current_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            if os.path.exists(cache_dir):
+                try:
+                    shutil.rmtree(cache_dir)
+                    deleted_items.append(f"Cache: {os.path.basename(cache_dir)}")
+                except Exception as e:
+                    errors.append(f"Failed to delete cache: {e}")
+
+            # 3. Delete Sibling Files (Preview/Thumbnail)
+            for f in os.listdir(dir_path):
+                f_path = os.path.join(dir_path, f)
+                if not os.path.isfile(f_path): continue
+                
+                f_base = os.path.splitext(f)[0]
+                # Careful not to delete other workflows if they share start, but here we usually rely on exact match or known extensions
+                if f_base == base_name:
+                    try:
+                        os.remove(f_path)
+                        deleted_items.append(f"File: {f}")
+                        if hasattr(self, 'image_loader_thread'):
+                            self.image_loader_thread.remove_from_cache(f_path)
+                    except Exception as e:
+                        errors.append(f"Failed to delete {f}: {e}")
+
+            # 4. Report & Refresh
+            if errors:
+                msg = "Completed with errors:\n" + "\n".join(errors)
+                QMessageBox.warning(self, "Delete Incomplete", msg)
+            else:
+                self.show_status_message(f"Deleted {len(deleted_items)} items.")
+                
+            self.current_path = None
+            self.refresh_list()
+            
+        except Exception as e:
+             QMessageBox.critical(self, "Error", f"Critical error during delete: {e}")
+
+    def rename_workflow(self):
+        """
+        Renames the selected workflow and its associated resources.
+        """
+        if not self.current_path or not os.path.exists(self.current_path):
+            QMessageBox.warning(self, "Warning", "No workflow selected.")
+            return
+
+        old_filename = os.path.basename(self.current_path)
+        old_base = os.path.splitext(old_filename)[0]
+        ext = os.path.splitext(old_filename)[1]
+        
+        # 1. Get New Name
+        new_base, ok = QInputDialog.getText(self, "Rename Workflow", "New Name:", text=old_base)
+        if not ok or not new_base: return
+        
+        new_base = new_base.strip()
+        if new_base == old_base: return
+        
+        if re.search(r'[<>:\"/\\|?*]', new_base):
+             QMessageBox.warning(self, "Invalid Name", "Filename contains invalid characters.")
+             return
+
+        dir_path = os.path.dirname(self.current_path)
+        new_filename = new_base + ext
+        new_path = os.path.join(dir_path, new_filename)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Error", "A file with that name already exists.")
+            return
+
+        # 2. Unload resources
+        if hasattr(self, 'preview_lbl'): 
+            self.preview_lbl.clear_memory()
+            self.preview_lbl.set_media(None)
+        if hasattr(self, 'graph_viewer'):
+            self.graph_viewer.clear_graph()
+        if hasattr(self, 'tab_example'): 
+            self.tab_example.unload_current_examples()
+            
+        QApplication.processEvents()
+
+        renamed_count = 0
+        errors = []
+
+        try:
+            # 3. Rename Cache Directory
+            old_cache_dir = calculate_structure_path(self.current_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            new_fake_path = os.path.join(dir_path, new_filename)
+            new_cache_dir = calculate_structure_path(new_fake_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            
+            if os.path.exists(old_cache_dir):
+                if os.path.exists(new_cache_dir):
+                     errors.append(f"Target cache directory already exists: {os.path.basename(new_cache_dir)}")
+                else:
+                    try:
+                        os.rename(old_cache_dir, new_cache_dir)
+                        renamed_count += 1
+                        
+                        # [Fix] Rename internal files
+                        if os.path.exists(new_cache_dir):
+                            for inner_f in os.listdir(new_cache_dir):
+                                inner_path = os.path.join(new_cache_dir, inner_f)
+                                if not os.path.isfile(inner_path): continue
+                                
+                                if inner_f.startswith(old_base):
+                                    inner_suffix = inner_f[len(old_base):]
+                                    if inner_suffix.startswith(".") or inner_suffix == "":
+                                        new_inner_name = new_base + inner_suffix
+                                        new_inner_path = os.path.join(new_cache_dir, new_inner_name)
+                                        try:
+                                            os.rename(inner_path, new_inner_path)
+                                        except OSError as e:
+                                            errors.append(f"Failed to rename cache file {inner_f}: {e}")
+
+                    except Exception as e:
+                        errors.append(f"Failed to rename cache: {e}")
+
+            # 4. Rename Sibling Files
+            for f in os.listdir(dir_path):
+                f_path = os.path.join(dir_path, f)
+                if not os.path.isfile(f_path): continue
+                
+                f_name_lower = f.lower()
+                
+                # Careful with pattern matching
+                if f.startswith(old_base):
+                    suffix = f[len(old_base):]
+                    if suffix.startswith("."):
+                        new_f_name = new_base + suffix
+                        new_f_path = os.path.join(dir_path, new_f_name)
+                        
+                        try:
+                            # Verify if target exists? (Might happen if multiple extension overlap)
+                            os.rename(f_path, new_f_path)
+                            renamed_count += 1
+                            if hasattr(self, 'image_loader_thread'):
+                                self.image_loader_thread.remove_from_cache(f_path)
+                        except Exception as e:
+                            errors.append(f"Failed to rename {f}: {e}")
+
+            # 5. Report & Refresh
+            if errors:
+                msg = "Completed with errors:\n" + "\n".join(errors)
+                QMessageBox.warning(self, "Rename Incomplete", msg)
+            else:
+                self.show_status_message(f"Renamed {renamed_count} files/dirs.")
+            
+            self.current_path = None
+            self.refresh_list()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Critical error during rename: {e}")
+
 
 class WorkflowDraggableMediaWidget(SmartMediaWidget):
     """
@@ -332,3 +610,4 @@ class WorkflowDraggableMediaWidget(SmartMediaWidget):
         else:
             # Fallback to default behavior if no JSON path (though usually we want JSON for workflow mode)
             super().mouseMoveEvent(event)
+

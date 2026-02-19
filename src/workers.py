@@ -551,13 +551,19 @@ class MetadataWorker(QThread):
         def replace_md(match):
             alt = match.group(1); url = match.group(2)
             local_path = self.api_service.download_file(url, embed_dir)
-            if local_path: return f"![{alt}]({local_path.replace(os.sep, '/')})"
+            # [Fix] Use relative path (embedded/filename) for Markdown
+            if local_path: 
+                rel_path = f"embedded/{os.path.basename(local_path)}"
+                return f"![{alt}]({rel_path})"
             return match.group(0)
 
         def replace_html(match):
             pre = match.group(1); url = match.group(2); post = match.group(3)
             local_path = self.api_service.download_file(url, embed_dir)
-            if local_path: return f'{pre}{local_path.replace(os.sep, "/")}{post}'
+            # [Fix] Use relative path (embedded/filename) for HTML/Markdown
+            if local_path: 
+                rel_path = f"embedded/{os.path.basename(local_path)}"
+                return f'{pre}{rel_path}{post}'
             return match.group(0)
             
         try:

@@ -260,8 +260,22 @@ class BaseManagerWidget(QWidget):
                 try:
                     if scanner.isRunning():
                         scanner.stop()
+                        scanner.wait()
                 except RuntimeError: pass
             self.active_scanners.clear()
+
+        # [Fix] Stop main UI scanner if running
+        if hasattr(self, 'scanner'):
+            try:
+                if self.scanner.isRunning():
+                    self.scanner.stop()
+                    self.scanner.wait()
+                # [Fix] Disconnect signals to prevent processing pending batches from the dead scanner
+                try: self.scanner.batch_ready.disconnect()
+                except RuntimeError: pass
+                try: self.scanner.finished.disconnect()
+                except RuntimeError: pass
+            except RuntimeError: pass
 
         self.tree.clear()
         self.filter_edit.clear()
@@ -691,7 +705,11 @@ class BaseManagerWidget(QWidget):
                     note_content = f.read()
             except OSError: pass
             
-        if hasattr(self, 'tab_note'): self.tab_note.set_text(note_content)
+        if hasattr(self, 'tab_note'):
+            # [Fix] Set base path for relative image resolution
+            self.tab_note.set_base_path(cache_dir)
+            self.tab_note.set_text(note_content)
+
         if hasattr(self, 'tab_example'): self.tab_example.load_examples(path)
 
     def save_note(self, text):
@@ -734,13 +752,13 @@ class BaseManagerWidget(QWidget):
         
         try:
             shutil.copy2(file_path, dest_path)
-            # Return Markdown/HTML snippet
-            dest_path_fwd = dest_path.replace("\\", "/")
+            # [Fix] Return Markdown/HTML tag with relative path
+            # Since we are using relative paths (filenames), we just use 'name'
             ext = os.path.splitext(name)[1].lower()
             if ext in ['.mp4', '.webm', '.mkv']:
-                return f'<video src="{dest_path_fwd}" controls width="100%"></video>'
+                return f'<video src="{name}" controls width="100%"></video>'
             else:
-                return f"![{name}]({dest_path_fwd})"
+                return f"![{name}]({name})"
         except Exception as e:
             self.show_status_message(f"Failed to copy media: {e}")
             return None

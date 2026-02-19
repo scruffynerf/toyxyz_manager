@@ -416,10 +416,128 @@ class PromptManagerWidget(BaseManagerWidget):
         self.btn_open_folder.setToolTip("Open folder of the currently selected file")
         self.btn_open_folder.clicked.connect(self.open_current_folder)
         
+        self.btn_rename_file = QPushButton("✏️ Rename")
+        self.btn_rename_file.setToolTip("Rename the selected prompt file")
+        self.btn_rename_file.clicked.connect(self.rename_prompt_file)
+        
+        self.btn_remove_file = QPushButton("🗑️ Remove")
+        self.btn_remove_file.setToolTip("Permanently delete the selected prompt file")
+        self.btn_remove_file.clicked.connect(self.remove_prompt_file)
+        
         hbox.addWidget(self.btn_new_file, 1) # Expand
         hbox.addWidget(self.btn_open_folder, 0) # Fixed size
+        hbox.addWidget(self.btn_remove_file, 1) # Expand
+        hbox.addWidget(self.btn_rename_file, 1) # Expand
         
         layout.addWidget(btn_container)
+
+    def rename_prompt_file(self):
+        """Renames the selected prompt JSON file and its cache directory."""
+        if not self.current_json_path or not os.path.exists(self.current_json_path):
+            QMessageBox.warning(self, "Warning", "No prompt file selected.")
+            return
+
+        old_filename = os.path.basename(self.current_json_path)
+        old_base = os.path.splitext(old_filename)[0]
+        
+        # 1. Get New Name
+        new_base, ok = QInputDialog.getText(self, "Rename File", "New Name:", text=old_base)
+        if not ok or not new_base: return
+        
+        new_base = new_base.strip()
+        if new_base == old_base: return
+        
+        # Validation
+        if any(c in new_base for c in '<>:"/\\|?*'):
+             QMessageBox.warning(self, "Invalid Name", "Filename contains invalid characters.")
+             return
+
+        dir_path = os.path.dirname(self.current_json_path)
+        new_filename = new_base + ".json"
+        new_path = os.path.join(dir_path, new_filename)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Error", "A file with that name already exists.")
+            return
+
+        # 2. Unload resources
+        self.tab_note.set_text("")
+        self.tab_example.unload_current_examples()
+        QApplication.processEvents()
+
+        try:
+            # 3. Rename Cache Directory
+            # Old cache path calculation
+            old_cache_dir = calculate_structure_path(self.current_json_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            
+            # New cache path calculation (using fake new path)
+            new_cache_dir = calculate_structure_path(new_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            
+            if os.path.exists(old_cache_dir):
+                if os.path.exists(new_cache_dir):
+                     QMessageBox.warning(self, "Error", f"Target cache directory already exists: {os.path.basename(new_cache_dir)}")
+                     return
+                try:
+                    os.rename(old_cache_dir, new_cache_dir)
+                except OSError as e:
+                    QMessageBox.critical(self, "Error", f"Failed to rename cache directory: {e}")
+                    return
+
+            # 4. Rename Main JSON File
+            os.rename(self.current_json_path, new_path)
+            
+            # [Fix] Update current path immediately to prevent loading old path
+            self.current_json_path = new_path
+            self.current_path = new_path 
+            
+            self.show_status_message(f"Renamed to {new_filename}")
+            self.refresh_list()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Critical error during rename: {e}")
+
+    def remove_prompt_file(self):
+        """Permanently deletes the selected prompt JSON file and its cache directory."""
+        if not self.current_json_path or not os.path.exists(self.current_json_path):
+            QMessageBox.warning(self, "Warning", "No prompt file selected.")
+            return
+
+        filename = os.path.basename(self.current_json_path)
+        
+        # Confirm Delete
+        reply = QMessageBox.question(
+            self, "Confirm Delete", 
+            f"Are you sure you want to PERMANENTLY delete:\n{filename}\n\nThis will also delete all associated notes and example images.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes: return
+
+        # 1. Unload resources
+        self.tab_note.set_text("")
+        self.tab_example.unload_current_examples()
+        import gc
+        gc.collect()
+        QApplication.processEvents()
+
+        try:
+            # 2. Delete Cache Directory
+            cache_dir = calculate_structure_path(self.current_json_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+
+            # 3. Delete Main JSON File
+            os.remove(self.current_json_path)
+            
+            self.current_json_path = None
+            self.current_prompt_data = []
+            self.prompt_list.clear()
+            
+            self.show_status_message(f"Deleted {filename}")
+            self.refresh_list()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error during delete: {e}")
 
     def open_current_folder(self):
         item = self.tree.currentItem()
@@ -479,11 +597,29 @@ class PromptManagerWidget(BaseManagerWidget):
              return None
              
         # Using UUID as folder name
-        target_relative_path = os.path.join(json_stem, item_data["id"], "assets")
+        # [Fix] Manually handle path to avoid flattening by calculate_structure_path
+        base_cache = calculate_structure_path(self.current_json_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+        assets_dir = os.path.join(base_cache, item_data["id"], "assets")
         
-        # Use BaseManager's copy logic
-        # It calculates final path as: cache/prompt/<target_relative_path>/<filename>
-        return self.copy_media_to_cache(file_path, target_relative_path) 
+        if not os.path.exists(assets_dir): os.makedirs(assets_dir)
+        
+        # Copy File
+        name = os.path.basename(file_path)
+        dest_path = os.path.join(assets_dir, name)
+        
+        try:
+            shutil.copy2(file_path, dest_path)
+            
+            # Return Markdown tag (Relative filename)
+            # Since base_path will be set to assets_dir, just filename is enough
+            ext = os.path.splitext(name)[1].lower()
+            if ext in ['.mp4', '.webm', '.mkv']:
+                return f'<video src="{name}" controls width="100%"></video>'
+            else:
+                return f"![{name}]({name})"
+        except Exception as e:
+            self.show_status_message(f"Failed to copy media: {e}")
+            return None 
     
     def on_tree_select(self):
         item = self.tree.currentItem()
@@ -493,6 +629,10 @@ class PromptManagerWidget(BaseManagerWidget):
         type_ = item.data(0, Qt.UserRole + 1)
         
         if type_ == "file" and path:
+            # [Fix] Validate file existence to prevent ghost errors during rename/delete
+            if not os.path.exists(path):
+                return
+                
             self.current_path = path # BaseManager tracks this
             self._load_prompt_content(path)
             
@@ -619,6 +759,11 @@ class PromptManagerWidget(BaseManagerWidget):
                 # cache/prompt/<stem>/<UUID>
                 base_cache = calculate_structure_path(self.current_json_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
                 custom_path = os.path.join(base_cache, item_id)
+                
+                # [Fix] Set base path for relative image resolution (assets folder)
+                assets_path = os.path.join(custom_path, "assets")
+                if hasattr(self, 'tab_note'):
+                     self.tab_note.set_base_path(assets_path)
                 
                 self.tab_example.load_examples(self.current_json_path, custom_cache_path=custom_path)
         

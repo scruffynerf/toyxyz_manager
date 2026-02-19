@@ -392,8 +392,256 @@ class ModelManagerWidget(BaseManagerWidget):
 
 
 
+    # === Remove / Rename Feature ===
+    
+    def init_left_bottom(self, layout):
+        """Override to add Remove/Rename buttons to the bottom of the left panel."""
+        btn_layout = QHBoxLayout()
+        
+        btn_remove = QPushButton("🗑️ Remove")
+        btn_remove.setToolTip("Permanently delete the selected model and its resources")
+        btn_remove.clicked.connect(self.remove_model)
+        
+        btn_rename = QPushButton("✏️ Rename")
+        btn_rename.setToolTip("Rename the selected model and its resources")
+        btn_rename.clicked.connect(self.rename_model)
+        
+        btn_layout.addWidget(btn_remove)
+        btn_layout.addWidget(btn_rename)
+        layout.addLayout(btn_layout)
+
+    def remove_model(self):
+        """
+        Permanently deletes the selected model and its associated resources.
+        Resources include:
+        - The model file itself
+        - Thumbnail/Preview files (same name, different extension)
+        - Cache directory (metadata, notes, examples)
+        """
+        if not self.current_path or not os.path.exists(self.current_path):
+            QMessageBox.warning(self, "Warning", "No model selected.")
+            return
+
+        filename = os.path.basename(self.current_path)
+        
+        # Confirm Delete
+        reply = QMessageBox.question(
+            self, "Confirm Delete", 
+            f"Are you sure you want to PERMANENTLY delete:\n{filename}\n\nThis will also delete:\n- Thumbnails/Previews\n- Metadata & Notes\n- Example Images",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes: return
+
+        # 1. Unload resources to release file locks
+        if hasattr(self, 'preview_lbl'): 
+            self.preview_lbl.clear_memory()
+            self.preview_lbl.set_media(None)
+        if hasattr(self, 'tab_example'): 
+            self.tab_example.unload_current_examples()
+        
+        # Ensure image loader isn't holding it (if applicable)
+        if hasattr(self, 'image_loader_thread'):
+            self.image_loader_thread.remove_from_cache(self.current_path)
+            
+        QApplication.processEvents() # Allow UI to release
+
+        base_name = os.path.splitext(filename)[0]
+        dir_path = os.path.dirname(self.current_path)
+        
+        deleted_items = []
+        errors = []
+
+        try:
+            # 2. Delete Cache Directory
+            cache_dir = calculate_structure_path(self.current_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            if os.path.exists(cache_dir):
+                try:
+                    shutil.rmtree(cache_dir)
+                    deleted_items.append(f"Cache: {os.path.basename(cache_dir)}")
+                except Exception as e:
+                    errors.append(f"Failed to delete cache: {e}")
+
+            # 3. Delete Sibling Files (Preview/Thumbnail)
+            # Scan directory for files with same basename
+            for f in os.listdir(dir_path):
+                f_path = os.path.join(dir_path, f)
+                if not os.path.isfile(f_path): continue
+                
+                f_base = os.path.splitext(f)[0]
+                if f_base == base_name:
+                    try:
+                        os.remove(f_path)
+                        deleted_items.append(f"File: {f}")
+                        # Also remove from loader cache just in case
+                        if hasattr(self, 'image_loader_thread'):
+                            self.image_loader_thread.remove_from_cache(f_path)
+                    except Exception as e:
+                        errors.append(f"Failed to delete {f}: {e}")
+
+            # 4. Report Result
+            if errors:
+                msg = "Completed with errors:\n" + "\n".join(errors)
+                QMessageBox.warning(self, "Delete Incomplete", msg)
+            else:
+                self.show_status_message(f"Deleted {len(deleted_items)} items.")
+                
+            # 5. Refresh List
+            self.current_path = None # Reset selection
+            self.refresh_list()
+            
+        except Exception as e:
+             QMessageBox.critical(self, "Error", f"Critical error during delete: {e}")
+
+    def rename_model(self):
+        """
+        Renames the selected model and its associated resources.
+        Resources include:
+        - The model file itself
+        - Thumbnail/Preview files
+        - Cache directory
+        """
+        if not self.current_path or not os.path.exists(self.current_path):
+            QMessageBox.warning(self, "Warning", "No model selected.")
+            return
+
+        old_filename = os.path.basename(self.current_path)
+        old_base = os.path.splitext(old_filename)[0]
+        ext = os.path.splitext(old_filename)[1]
+        
+        # 1. Get New Name
+        new_base, ok = QInputDialog.getText(self, "Rename Model", "New Name:", text=old_base)
+        if not ok or not new_base: return
+        
+        new_base = new_base.strip()
+        if new_base == old_base: return
+        
+        # Validate Filename
+        # Basic validation (OS specific really, but let's catch obvious ones)
+        if re.search(r'[<>:\"/\\|?*]', new_base):
+             QMessageBox.warning(self, "Invalid Name", "Filename contains invalid characters.")
+             return
+
+        dir_path = os.path.dirname(self.current_path)
+        new_filename = new_base + ext
+        new_path = os.path.join(dir_path, new_filename)
+        
+        if os.path.exists(new_path):
+            QMessageBox.warning(self, "Error", "A file with that name already exists.")
+            return
+
+        # 2. Unload resources
+        if hasattr(self, 'preview_lbl'): 
+            self.preview_lbl.clear_memory()
+            self.preview_lbl.set_media(None)
+        if hasattr(self, 'tab_example'): 
+            self.tab_example.unload_current_examples()
+            
+        QApplication.processEvents()
+
+        renamed_count = 0
+        errors = []
+
+        try:
+            # 3. Rename Cache Directory
+            old_cache_dir = calculate_structure_path(self.current_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            # calculate_structure_path uses basename, so we can't use it directly for target yet.
+            # Manually construct target cache path
+            # Logic: cache_root/mode/new_base
+            # We need to respect the sanitize_mode logic from core.py ideally, but let's assume 'model' for now or reuse utils
+            # Re-using calculate_structure_path with a fake path is safer
+            new_fake_path = os.path.join(dir_path, new_filename)
+            new_cache_dir = calculate_structure_path(new_fake_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            
+            if os.path.exists(old_cache_dir):
+                if os.path.exists(new_cache_dir):
+                     errors.append(f"Target cache directory already exists: {os.path.basename(new_cache_dir)}")
+                else:
+                    try:
+                        os.rename(old_cache_dir, new_cache_dir)
+                        renamed_count += 1
+                        
+                        # [Fix] Rename files INSIDE the cache directory
+                        if os.path.exists(new_cache_dir):
+                            for inner_f in os.listdir(new_cache_dir):
+                                inner_path = os.path.join(new_cache_dir, inner_f)
+                                if not os.path.isfile(inner_path): continue
+                                
+                                if inner_f.startswith(old_base):
+                                    inner_suffix = inner_f[len(old_base):]
+                                    if inner_suffix.startswith(".") or inner_suffix == "":
+                                        new_inner_name = new_base + inner_suffix
+                                        new_inner_path = os.path.join(new_cache_dir, new_inner_name)
+                                        try:
+                                            os.rename(inner_path, new_inner_path)
+                                        except OSError as e:
+                                            errors.append(f"Failed to rename cache file {inner_f}: {e}")
+
+                    except Exception as e:
+                        errors.append(f"Failed to rename cache: {e}")
+
+            # 4. Rename Sibling Files (Preview/Thumbnail) & Main File
+            # Iterate directory to find all matching files (e.g. old_base.png, old_base.preview.mp4)
+            # Note: We must be careful not to rename "old_base_extra.png" if logic is exact match
+            
+            for f in os.listdir(dir_path):
+                f_path = os.path.join(dir_path, f)
+                if not os.path.isfile(f_path): continue
+                
+                f_name_lower = f.lower()
+                # Check if file starts with old_base and has a valid separator or is exact match (extensions)
+                # But easiest way is to splitext
+                f_base = os.path.splitext(f)[0]
+                f_ext = os.path.splitext(f)[1]
+                
+                # Careful: old_base="foo", file="foo_bar.png" -> Should NOT rename
+                # Careful: old_base="foo", file="foo.preview.png" -> Should rename?
+                # Usually standard practice is exact base match or specific patterns.
+                # Let's stick to files where os.path.splitext(f)[0] == old_base
+                # Wait, .preview.png has base "foo.preview". 
+                
+                # Strategy: Check if filename starts with old_base AND remaining part is an extension (or multi-ext)
+                # Or simply: if f.startswith(old_base): check if suffix is a valid extension?
+                # Simpler: If f == old_base + ext -> Rename
+                # If f == old_base + ".png" -> Rename
+                # If f == old_base + ".preview.png" -> Rename
+                
+                if f.startswith(old_base):
+                    suffix = f[len(old_base):]
+                    # Suffix must be an extension or start with .
+                    if suffix.startswith("."):
+                        # Construct new name
+                        new_f_name = new_base + suffix
+                        new_f_path = os.path.join(dir_path, new_f_name)
+                        
+                        try:
+                            os.rename(f_path, new_f_path)
+                            renamed_count += 1
+                            # Update cache
+                            if hasattr(self, 'image_loader_thread'):
+                                self.image_loader_thread.remove_from_cache(f_path)
+                        except Exception as e:
+                            errors.append(f"Failed to rename {f}: {e}")
+
+            # 5. Report & Refresh
+            if errors:
+                msg = "Completed with errors:\n" + "\n".join(errors)
+                QMessageBox.warning(self, "Rename Incomplete", msg)
+            else:
+                self.show_status_message(f"Renamed {renamed_count} files/dirs.")
+            
+            self.current_path = None
+            self.refresh_list()
+            
+            # Optional: Try to re-select the renamed file
+            # self.select_item_by_path(new_path) # Need to implement this helper if desired
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Critical error during rename: {e}")
+
     def closeEvent(self, event):
         self.metadata_controller.stop()
+
         self.downl_controller.stop()
         
         # [Memory] Explicit cleanup of media widgets

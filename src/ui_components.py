@@ -1091,8 +1091,15 @@ class MarkdownNoteWidget(QWidget):
         self.stack.addWidget(self.edit_widget)
         self.layout.addWidget(self.stack)
 
+        self.base_path = None # [Relative Path]
+
     def set_text(self, text):
         self.editor.setText(text)
+        self.update_preview()
+
+    # [Relative Path] Set base path for resolving relative images
+    def set_base_path(self, path):
+        self.base_path = path
         self.update_preview()
 
     def update_preview(self):
@@ -1100,6 +1107,13 @@ class MarkdownNoteWidget(QWidget):
         # Default font size logic or just let Qt handle it
         # Let Qt/QSS handle the font size
         css = f"<style>img {{ max-width: 100%; height: auto; }} body {{ color: black; background-color: white; font-family: sans-serif; }}</style>"
+        
+        # [Relative Path] Set search paths for the browser to find images
+        if self.base_path:
+            self.browser.setSearchPaths([self.base_path])
+        else:
+            self.browser.setSearchPaths([])
+            
         try:
             import markdown
             html = markdown.markdown(text)
