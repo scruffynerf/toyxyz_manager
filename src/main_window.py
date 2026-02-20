@@ -78,7 +78,7 @@ class ModelManagerWindow(QMainWindow):
                 elif isinstance(o, QMediaPlayer): counts["QMediaPlayer"] += 1
                 elif isinstance(o, QVideoWidget): counts["QVideoWidget"] += 1
                 elif isinstance(o, QThread): counts["QThread"] += 1
-            except: pass
+            except Exception: pass
             
         info.append(f"Details: Pixmap={counts['QPixmap']} | Image={counts['QImage']} | Player={counts['QMediaPlayer']} | VideoW={counts['QVideoWidget']} | Thread={counts['QThread']}")
         

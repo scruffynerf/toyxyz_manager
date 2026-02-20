@@ -163,7 +163,7 @@ class MetadataViewerWidget(QWidget):
                         if itype != "checkpoint":
                              line += f" : {item.get('weight', 1.0)}"
                         lines.append(line)
-            except:
+            except Exception:
                 lines.append(data["raw_resources"])
         elif "resources" in p_map:
             lines.append(p_map["resources"])

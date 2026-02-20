@@ -19,13 +19,13 @@ def validate_metadata_type(img):
             try:
                 json.loads(img.info["workflow"])
                 return "comfy"
-            except: pass
+            except Exception: pass
             
         if "prompt" in img.info:
             try:
                 json.loads(img.info["prompt"])
                 return "comfy"
-            except: pass
+            except Exception: pass
 
         if extract_webui_parameters(img):
             return "webui"
@@ -58,11 +58,11 @@ def standardize_metadata(img) -> Dict[str, Any]:
     workflow = None
     if "prompt" in img.info:
         try: workflow = json.loads(img.info["prompt"])
-        except: pass
+        except Exception: pass
         
     if not workflow and "workflow" in img.info:
         try: workflow = json.loads(img.info["workflow"])
-        except: pass
+        except Exception: pass
         
     if workflow:
         res["type"] = "comfy"
@@ -92,7 +92,7 @@ def standardize_metadata(img) -> Dict[str, Any]:
                 if "n_samples" in data or "uc" in data or "steps" in data:
                         nai_data = data
                         break
-            except: pass
+            except Exception: pass
             
     # Fallback: Check LSB (Steganography)
     if not nai_data and res["type"] == "unknown":
@@ -108,7 +108,7 @@ def standardize_metadata(img) -> Dict[str, Any]:
                  comment_data = json.loads(nai_data["Comment"])
                  if isinstance(comment_data, dict):
                      nai_data.update(comment_data)
-             except: pass
+             except Exception: pass
              
         # Map NAI fields
         res["main"] = {
@@ -128,7 +128,7 @@ def standardize_metadata(img) -> Dict[str, Any]:
             if k not in exclude:
                 if isinstance(v, (dict, list)):
                     try: v = json.dumps(v)
-                    except: pass
+                    except Exception: pass
                 res["etc"][k] = v
 
     # 3. Check A1111 (Parameters String) fallback
@@ -167,7 +167,7 @@ def standardize_metadata(img) -> Dict[str, Any]:
                          res["etc"][k] = v
              else:
                  res["type"] = "a1111"
-         except:
+         except Exception:
              res["type"] = "a1111"
          
     res["raw_text"] = raw_params

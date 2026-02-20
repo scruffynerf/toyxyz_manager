@@ -145,7 +145,7 @@ class GalleryManagerWidget(BaseManagerWidget):
         try:
             raw_json = json.dumps(meta, indent=4, ensure_ascii=False)
             self.txt_raw.setText(raw_json)
-        except:
+        except Exception:
             self.txt_raw.setText(str(meta))
 
     def _open_current_file(self):

@@ -54,8 +54,8 @@ def extract_webui_parameters(img) -> str:
                         if exif_ifd:
                             for k, v in exif_ifd.items():
                                 if k in [37510, 0x9286, 0x9c9c]: exif_values.append(v)
-                    except: pass
-        except: pass
+                    except Exception: pass
+        except Exception: pass
 
     # Source B: Legacy _getexif() (Flattened)
     if hasattr(img, "_getexif"):
@@ -64,7 +64,7 @@ def extract_webui_parameters(img) -> str:
             if legacy:
                  for k, v in legacy.items():
                     if k in [37510, 0x9286, 0x9c9c]: exif_values.append(v)
-        except: pass
+        except Exception: pass
     
     # Process Exif Candidates
     for val in exif_values:
@@ -87,7 +87,7 @@ def extract_webui_parameters(img) -> str:
                     # But for now, we want to return the PARAMS. 
                     # If we return partial text, it might fail the check later.
                     # Let's trust is_valid_params.
-                except: pass
+                except Exception: pass
         elif isinstance(val, str):
             decoded = val
             

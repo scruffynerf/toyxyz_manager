@@ -94,17 +94,15 @@ class SmartMediaWidget(QWidget):
 
     def release_resources(self):
         """
-        [Memory Optimization] Fully release video resources.
+        [Memory Optimization] Stop playback but retain the QMediaPlayer to prevent 
+        synchronous blocking in Windows Media Foundation when switching tabs.
         Called when tab is hidden or widget is no longer needed.
         """
         if self.media_player or self.video_widget:
             generated_logger = logging.getLogger("ui_components")
-            generated_logger.debug(f"[SmartMediaWidget] Release resources for: {self.current_path}")
+            generated_logger.debug(f"[SmartMediaWidget] Stop video playback for: {self.current_path}")
 
-        self._destroy_video_components()
-        self._stop_movie()
-        # Clear image as well if needed, but usually we just want to stop active media
-        # self.lbl_image.clear() 
+        self._stop_video_playback()
 
     def _stop_video_playback(self):
         """Stops playback and releases file lock without destroying components."""
@@ -223,7 +221,7 @@ class SmartMediaWidget(QWidget):
         if self._movie:
             try:
                 self._movie.frameChanged.disconnect(self._on_movie_frame)
-            except: pass
+            except Exception: pass
             
             self._movie.stop()
             self.lbl_image.setMovie(None) # Just in case
@@ -429,6 +427,7 @@ class FileCollisionDialog(QDialog):
     def __init__(self, filename, parent=None):
         super().__init__(parent)
         self.setWindowTitle("File Exists")
+        self.setAttribute(Qt.WA_DeleteOnClose)
         # [Memory] Auto-delete off for safety
         self.resize(400, 150)
         self.result_value = "cancel"
@@ -502,6 +501,7 @@ class DownloadDialog(QDialog):
     def __init__(self, default_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Download Model")
+        self.setAttribute(Qt.WA_DeleteOnClose)
         # [Memory] Auto-delete off for safety
         self.resize(550, 180)
         layout = QVBoxLayout(self)
@@ -543,6 +543,7 @@ class LinkInsertDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Insert Link")
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.resize(400, 150)
         layout = QVBoxLayout(self)
         
@@ -738,6 +739,7 @@ class FolderDialog(QDialog):
     def __init__(self, parent=None, path="", mode="model", model_type="checkpoints", comfy_root=""):
         super().__init__(parent)
         self.setWindowTitle("Folder Settings")
+        self.setAttribute(Qt.WA_DeleteOnClose)
         # [Memory] Auto-delete on close
         self.resize(500, 250)
         

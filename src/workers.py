@@ -107,7 +107,7 @@ class ImageLoader(QThread):
                 
             if not self.queue:
                 logging.debug("[ImageLoader] Queue empty. Waiting...")
-                self.condition.wait(self.mutex)
+                self.condition.wait(self.mutex, 500)
                 logging.debug(f"[ImageLoader] Woke up. is_running={self._is_running}")
             
             if not self._is_running:
@@ -672,7 +672,7 @@ class ModelDownloadWorker(QThread):
                              vid = latest_ver["id"]
                              download_url = f"https://civitai.com/api/download/models/{vid}"
                              version_id = vid
-                     except: pass
+                     except Exception: pass
             
             if model_id:
                 try:
@@ -682,7 +682,7 @@ class ModelDownloadWorker(QThread):
                     if "model" in data: name = f"{data['model'].get('name')} - {name}"
                     
                     self.name_found.emit(self.task_key, f"{name} / {os.path.basename(self.target_dir)}")
-                except: pass 
+                except Exception: pass 
                 
             # 2. Collision Check (Pre-download)
             try:
@@ -795,7 +795,7 @@ class LocalMetadataWorker(QThread):
         while self._is_running:
             self.mutex.lock()
             if not self.queue:
-                self.condition.wait(self.mutex)
+                self.condition.wait(self.mutex, 500)
                 
             if not self._is_running:
                 self.mutex.unlock()
@@ -840,10 +840,7 @@ class LocalMetadataWorker(QThread):
                             "raw_text": "Video File (Metadata extraction not supported)"
                         }
                     else:
-                        with open(path, 'rb') as f:
-                            img_bytes = f.read()
-                        
-                        with Image.open(BytesIO(img_bytes)) as img:
+                        with Image.open(path) as img:
                             img.load() 
                             meta = standardize_metadata(img)
                     
