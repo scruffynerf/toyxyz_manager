@@ -926,12 +926,7 @@ class BaseManagerWidget(QWidget):
         self.stop_all_workers()
         super().closeEvent(event)
 
-    def stop_all_workers(self):
-        """
-        [Optimization] Parallel shutdown sequence.
-        Phase 1: Signal all threads to stop.
-        Phase 2: Wait for threads with a global timeout.
-        """
+
     def stop_all_workers(self):
         """
         [Optimization] Parallel shutdown sequence.

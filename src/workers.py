@@ -389,7 +389,7 @@ class MetadataWorker(QThread):
 
     def _wait_for_user(self):
         self._wait_mutex.lock()
-        self._wait_condition.wait(self._wait_mutex)
+        self._wait_condition.wait(self._wait_mutex, 30000)
         self._wait_mutex.unlock()
 
     def run(self):
@@ -806,7 +806,7 @@ class LocalMetadataWorker(QThread):
     
     def cancel_path(self, path):
         with QMutexWithLocker(self.mutex):
-            self.queue = deque([p for p in self.queue if os.path.normpath(p) != os.normpath(path)])
+            self.queue = deque([p for p in self.queue if os.path.normpath(p) != os.path.normpath(path)])
     
     def clear_queue(self):
         with QMutexWithLocker(self.mutex):
@@ -845,12 +845,13 @@ class LocalMetadataWorker(QThread):
                         mtime = os.path.getmtime(path)
                         cache_key = (path, mtime)
                         
+                        cached_meta = None
                         with QMutexWithLocker(self.mutex):
                             if cache_key in self.cache:
                                 self.cache.move_to_end(cache_key)
                                 cached_meta = self.cache[cache_key]
                         
-                        if cache_key in self.cache:
+                        if cached_meta is not None:
                             if self._is_running:
                                 self.finished.emit(path, cached_meta)
                             continue

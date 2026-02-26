@@ -35,7 +35,7 @@ class FileService:
         Manages the .json cache sidecard in the cache structure.
         """
         cache_dir = calculate_structure_path(model_path, self.cache_root, directories, mode=cache_mode)
-        if not os.path.exists(cache_dir): os.makedirs(cache_dir)
+        os.makedirs(cache_dir, exist_ok=True)
         
         model_name = os.path.splitext(os.path.basename(model_path))[0]
         json_path = os.path.join(cache_dir, model_name + ".json")
