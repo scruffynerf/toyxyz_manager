@@ -1,3 +1,4 @@
+import logging
 
 def parse_webui_parameters(text: str) -> str:
     """
@@ -54,8 +55,10 @@ def extract_webui_parameters(img) -> str:
                         if exif_ifd:
                             for k, v in exif_ifd.items():
                                 if k in [37510, 0x9286, 0x9c9c]: exif_values.append(v)
-                    except Exception: pass
-        except Exception: pass
+                    except Exception as e:
+                        logging.debug(f"[WebUI] Exif IFD parsing error: {e}")
+        except Exception as e:
+            logging.debug(f"[WebUI] Modern getexif() error: {e}")
 
     # Source B: Legacy _getexif() (Flattened)
     if hasattr(img, "_getexif"):
@@ -87,7 +90,8 @@ def extract_webui_parameters(img) -> str:
                     # But for now, we want to return the PARAMS. 
                     # If we return partial text, it might fail the check later.
                     # Let's trust is_valid_params.
-                except Exception: pass
+                except Exception as e:
+                    logging.debug(f"[WebUI] Exif user comment decode error with {enc}: {e}")
         elif isinstance(val, str):
             decoded = val
             

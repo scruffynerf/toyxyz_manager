@@ -207,11 +207,7 @@ class ExampleTabWidget(QWidget):
         self.current_example_idx = (self.current_example_idx + delta) % len(self.example_images)
         self._update_ui()
         
-        # [Memory] Periodic GC
-        self._gc_counter += 1
-        if self._gc_counter >= 10:
-            gc.collect()
-            self._gc_counter = 0
+        # [Memory] Periodic GC - removed to prevent stuttering
 
     def add_example_image(self):
         if not self.current_item_path: return
@@ -280,7 +276,6 @@ class ExampleTabWidget(QWidget):
                     except PermissionError as pe:
                         if attempt < 2:
                             time.sleep(0.1)  # 100ms delay
-                            gc.collect()  # Force garbage collection
                         else:
                             raise pe
 

@@ -513,12 +513,8 @@ class PromptManagerWidget(BaseManagerWidget):
         
         if reply != QMessageBox.Yes: return
 
-        # 1. Unload resources
-        self.tab_note.set_text("")
+        # [Fix] Unload resources (images/videos) to release file handles before deletion
         self.tab_example.unload_current_examples()
-        import gc
-        gc.collect()
-        QApplication.processEvents()
 
         try:
             # 2. Delete Cache Directory
@@ -896,8 +892,6 @@ class PromptManagerWidget(BaseManagerWidget):
         
         # [Fix] Unload resources (images/videos) to release file handles before deletion
         self.tab_example.unload_current_examples()
-        import gc
-        gc.collect() # Force cleanup
         
         # [Cleanup] Delete Resource Folder
 

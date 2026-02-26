@@ -62,8 +62,10 @@ class ImageLoader(QThread):
     
     def __del__(self):
         try:
-            self.wait()
-        except RuntimeError: pass
+            if hasattr(self, 'wait'):
+                self.wait()
+        except RuntimeError as e:
+            logging.debug(f"[ImageLoader] RuntimeError during cleanup: {e}")
 
     def load_image(self, path, target_width=None):
         with QMutexWithLocker(self.mutex):
@@ -185,6 +187,7 @@ class ThumbnailWorker(QThread):
                 return
             self.finished.emit(True, "Thumbnail updated.")
         except Exception as e:
+            logging.error(f"[ThumbnailWorker] Error setting thumbnail: {e}")
             self.finished.emit(False, str(e))
 
 # ==========================================
@@ -194,7 +197,7 @@ class FileScannerWorker(QThread):
     batch_ready = Signal(str, list, list) 
     finished = Signal(dict)
 
-    def __init__(self, base_path, extensions, recursive=True):
+    def __init__(self, base_path, extensions, recursive=True, max_depth=20):
         super().__init__()
         self.setObjectName("ScannerThread")
         self.base_path = base_path
@@ -202,6 +205,7 @@ class FileScannerWorker(QThread):
         self.recursive = recursive
         self._is_running = True
         self.CHUNK_SIZE = 2000 # [Optimization] Increase batch size to reduce UI spam
+        self.max_depth = max_depth # [Fix] Max depth to prevent deep tree freezing
 
     def stop(self):
         self._is_running = False
@@ -212,15 +216,19 @@ class FileScannerWorker(QThread):
             return
 
         logging.debug(f"[FileScanner] Starting scan for: {self.base_path}")
-        stack = [self.base_path]
+        stack = [(self.base_path, 0)] # [Depth Limit] Tuple of (path, depth)
         visited = set()
         visited.add(os.path.realpath(self.base_path))
         
         while stack:
             if not self._is_running: return
             
-            current_dir = stack.pop()
+            current_dir, current_depth = stack.pop()
             
+            if current_depth > self.max_depth:
+                logging.warning(f"[FileScanner] Max depth ({self.max_depth}) exceeded at {current_dir}. Skipping.")
+                continue
+
             try:
                 with os.scandir(current_dir) as it:
                     dirs_buffer = []
@@ -238,7 +246,7 @@ class FileScannerWorker(QThread):
 
                             dirs_buffer.append(entry.name)
                             if self.recursive:
-                                stack.append(entry.path)
+                                stack.append((entry.path, current_depth + 1))
                         
                         elif entry.is_file():
                              if os.path.splitext(entry.name)[1].lower() in self.extensions:
@@ -257,12 +265,14 @@ class FileScannerWorker(QThread):
                                          self.batch_ready.emit(current_dir, [], files_buffer)
                                          files_buffer = []
 
-                                 except OSError: pass
+                                 except OSError as e:
+                                     logging.debug(f"[FileScanner] OSError accessing {entry.path}: {e}")
                     
                     if dirs_buffer or files_buffer:
                          self.batch_ready.emit(current_dir, dirs_buffer, files_buffer)
             
-            except OSError:
+            except OSError as e:
+                logging.debug(f"[FileScanner] OSError accessing directory {current_dir}: {e}")
                 continue
                 
         if self._is_running:
@@ -274,13 +284,14 @@ class FileScannerWorker(QThread):
 class FileSearchWorker(QThread):
     finished = Signal(list) 
     
-    def __init__(self, roots, query, extensions):
+    def __init__(self, roots, query, extensions, max_depth=20):
         super().__init__()
         self.setObjectName("SearchThread")
         self.roots = roots if isinstance(roots, list) else [roots]
         self.query = query.lower()
         self.extensions = extensions
         self._is_running = True
+        self.max_depth = max_depth # [Fix] Maintain depth limit
 
     def stop(self):
         self._is_running = False
@@ -289,13 +300,20 @@ class FileSearchWorker(QThread):
         results = []
         # [Refactor] Iterative Scan for safety
         stack = []
+        visited = set() # [Fix] Added missing visited set
+        
         for r in self.roots:
             if os.path.exists(r):
-                stack.append(r)
+                stack.append((r, 0))
+                visited.add(os.path.realpath(r))
         
         while stack:
             if not self._is_running: break
-            current_path = stack.pop()
+            current_path, current_depth = stack.pop()
+            
+            if current_depth > self.max_depth:
+                logging.warning(f"[FileSearch] Max depth ({self.max_depth}) exceeded at {current_path}. Skipping.")
+                continue
             
             try:
                 with os.scandir(current_path) as it:
@@ -303,7 +321,13 @@ class FileSearchWorker(QThread):
                         if not self._is_running: break
                         
                         if entry.is_dir():
-                            stack.append(entry.path)
+                            if entry.is_symlink(): continue
+                            
+                            real_path = os.path.realpath(entry.path)
+                            if real_path in visited: continue
+                            visited.add(real_path)
+                            
+                            stack.append((entry.path, current_depth + 1))
                         elif entry.is_file():
                              name_lower = entry.name.lower()
                              ext = os.path.splitext(name_lower)[1]
@@ -312,9 +336,11 @@ class FileSearchWorker(QThread):
                                      try:
                                          st = entry.stat()
                                          results.append((entry.path, "file", st.st_size, st.st_mtime))
-                                     except OSError:
+                                     except OSError as e:
+                                         logging.debug(f"[FileSearch] OSError stat {entry.path}: {e}")
                                          results.append((entry.path, "file", 0, 0))
-            except OSError: pass
+            except OSError as e:
+                logging.debug(f"[FileSearch] OSError accessing directory {current_path}: {e}")
         
         if self._is_running:
             self.finished.emit(results)
@@ -672,7 +698,8 @@ class ModelDownloadWorker(QThread):
                              vid = latest_ver["id"]
                              download_url = f"https://civitai.com/api/download/models/{vid}"
                              version_id = vid
-                     except Exception: pass
+                     except Exception as e:
+                         logging.debug(f"[ModelDownloadWorker] Failed to resolve version URL from API: {e}")
             
             if model_id:
                 try:
@@ -682,7 +709,8 @@ class ModelDownloadWorker(QThread):
                     if "model" in data: name = f"{data['model'].get('name')} - {name}"
                     
                     self.name_found.emit(self.task_key, f"{name} / {os.path.basename(self.target_dir)}")
-                except Exception: pass 
+                except Exception as e:
+                    logging.debug(f"[ModelDownloadWorker] Failed to resolve model name from API: {e}")
                 
             # 2. Collision Check (Pre-download)
             try:
@@ -760,8 +788,10 @@ class LocalMetadataWorker(QThread):
 
     def __del__(self):
         try:
-            self.wait()
-        except RuntimeError: pass
+            if hasattr(self, 'wait'):
+                self.wait()
+        except RuntimeError as e:
+            logging.debug(f"[LocalMetadataWorker] RuntimeError during cleanup: {e}")
         
     def extract(self, path):
         with QMutexWithLocker(self.mutex):
@@ -824,8 +854,8 @@ class LocalMetadataWorker(QThread):
                             if self._is_running:
                                 self.finished.emit(path, cached_meta)
                             continue
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        logging.debug(f"[LocalMetadataWorker] Cannot get mtime or cache key for {path}: {e}")
                     
                     # [Fix] Check if video before attempting Image.open
                     ext = os.path.splitext(path)[1].lower()
@@ -851,7 +881,8 @@ class LocalMetadataWorker(QThread):
                                 self.cache.move_to_end(cache_key)
                                 if len(self.cache) > self.CACHE_SIZE:
                                     self.cache.popitem(last=False)
-                        except Exception: pass
+                        except Exception as e:
+                            logging.debug(f"[LocalMetadataWorker] Cache update failed for {path}: {e}")
                         
                     if self._is_running:
                         self.finished.emit(path, meta)

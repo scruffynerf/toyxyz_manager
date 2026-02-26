@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Optional, Dict, Any
 
 class EfficientLSBReader:
@@ -85,11 +86,11 @@ def extract_novelai_data(img) -> Optional[Dict[str, Any]]:
             json_str = json_bytes.decode("utf-8")
             data = json.loads(json_str)
             return data
-        except Exception:
+        except Exception as e:
+            logging.debug(f"[NovelAI] Decompression/JSON parsing error: {e}")
             return None
         
     except Exception as e:
-        # print(f"NAI Extract Error: {e}")
-        pass
+        logging.debug(f"[NovelAI] Extraction process error: {e}")
         
     return None

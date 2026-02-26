@@ -17,7 +17,9 @@ class WorkflowGroupItem(QGraphicsItem):
         # Geometry
         bounding = group_data.get("bounding", [])
         if len(bounding) >= 4:
-            self.rect = QRectF(bounding[0], bounding[1], bounding[2], bounding[3])
+            w = min(max(bounding[2], 50), 30000) # [Safety] Limit max width
+            h = min(max(bounding[3], 50), 30000) # [Safety] Limit max height
+            self.rect = QRectF(bounding[0], bounding[1], w, h)
         else:
             self.rect = QRectF(0, 0, 100, 100)
             
@@ -364,7 +366,7 @@ class WorkflowGraphViewer(QGraphicsView):
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse) # Zoom center mouse
         self.setBackgroundBrush(Qt.white)
-        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.SmartViewportUpdate) # [Optimization] Prevent FullViewportUpdate memory spike
         
         # Panning State
         self._is_panning = False
@@ -616,8 +618,28 @@ class WorkflowGraphViewer(QGraphicsView):
     def center_view(self):
         # Fit logic
         rect = self.scene().itemsBoundingRect()
+        if rect.isEmpty() or rect.width() == 0 or rect.height() == 0:
+            return
+            
+        # [Safety] Prevent insanely large rects causing QPainter memory crash (engine == 0)
+        MAX_DIM = 30000
+        if rect.width() > MAX_DIM or rect.height() > MAX_DIM:
+            cx, cy = rect.center().x(), rect.center().y()
+            w = min(rect.width(), MAX_DIM)
+            h = min(rect.height(), MAX_DIM)
+            rect = QRectF(cx - w/2, cy - h/2, w, h)
+            
+        # Add a little padding to the rect
+        rect.adjust(-50, -50, 50, 50)
+        
         self.setSceneRect(rect)
         self.fitInView(rect, Qt.KeepAspectRatio)
+        
+        # [Safety] Prevent extreme zooming out which also triggers massive QImage buffers internally
+        current_scale = self.transform().m11()
+        if current_scale < 0.05:
+            self.resetTransform()
+            self.scale(0.05, 0.05)
 
     def wheelEvent(self, event):
         # Smooth Zoom

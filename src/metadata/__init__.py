@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Dict, Any
 
 from .comfy import parse_comfy_workflow
@@ -19,19 +20,21 @@ def validate_metadata_type(img):
             try:
                 json.loads(img.info["workflow"])
                 return "comfy"
-            except Exception: pass
+            except Exception as e:
+                logging.debug(f"[Metadata] Failed to parse 'workflow' as JSON: {e}")
             
         if "prompt" in img.info:
             try:
                 json.loads(img.info["prompt"])
                 return "comfy"
-            except Exception: pass
+            except Exception as e:
+                logging.debug(f"[Metadata] Failed to parse 'prompt' as JSON: {e}")
 
         if extract_webui_parameters(img):
             return "webui"
         
-    except Exception:
-        pass
+    except Exception as e:
+        logging.debug(f"[Metadata] Unexpected error during metadata validation: {e}")
         
     return None
 
@@ -58,11 +61,13 @@ def standardize_metadata(img) -> Dict[str, Any]:
     workflow = None
     if "prompt" in img.info:
         try: workflow = json.loads(img.info["prompt"])
-        except Exception: pass
+        except Exception as e:
+            logging.debug(f"[Metadata] Failed to load 'prompt' from image info: {e}")
         
     if not workflow and "workflow" in img.info:
         try: workflow = json.loads(img.info["workflow"])
-        except Exception: pass
+        except Exception as e:
+            logging.debug(f"[Metadata] Failed to load 'workflow' from image info: {e}")
         
     if workflow:
         res["type"] = "comfy"
@@ -92,7 +97,8 @@ def standardize_metadata(img) -> Dict[str, Any]:
                 if "n_samples" in data or "uc" in data or "steps" in data:
                         nai_data = data
                         break
-            except Exception: pass
+            except Exception as e:
+                logging.debug(f"[Metadata] Failed to parse NAI specific keys: {e}")
             
     # Fallback: Check LSB (Steganography)
     if not nai_data and res["type"] == "unknown":
@@ -108,7 +114,8 @@ def standardize_metadata(img) -> Dict[str, Any]:
                  comment_data = json.loads(nai_data["Comment"])
                  if isinstance(comment_data, dict):
                      nai_data.update(comment_data)
-             except Exception: pass
+             except Exception as e:
+                 logging.debug(f"[Metadata] Error loading nested Comment JSON in NAI: {e}")
              
         # Map NAI fields
         res["main"] = {
@@ -128,7 +135,8 @@ def standardize_metadata(img) -> Dict[str, Any]:
             if k not in exclude:
                 if isinstance(v, (dict, list)):
                     try: v = json.dumps(v)
-                    except Exception: pass
+                    except Exception as e:
+                        logging.debug(f"[Metadata] Failed to json.dumps ETC val {v}: {e}")
                 res["etc"][k] = v
 
     # 3. Check A1111 (Parameters String) fallback
@@ -167,7 +175,8 @@ def standardize_metadata(img) -> Dict[str, Any]:
                          res["etc"][k] = v
              else:
                  res["type"] = "a1111"
-         except Exception:
+         except Exception as e:
+             logging.debug(f"[Metadata] Error identifying A1111/SimpAI parameters format: {e}")
              res["type"] = "a1111"
          
     res["raw_text"] = raw_params

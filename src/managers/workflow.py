@@ -354,6 +354,18 @@ class WorkflowManagerWidget(BaseManagerWidget):
 
     def init_left_bottom(self, layout):
         """Override to add Remove/Rename buttons to the bottom of the left panel."""
+        
+        # Add 'Template Mode' checkbox
+        from PySide6.QtWidgets import QCheckBox
+        self.chk_show_workflow_only = QCheckBox("Template Mode")
+        self.chk_show_workflow_only.setToolTip(
+            "Filter the list to show exclusively valid ComfyUI workflow JSON files.\n"
+            "Automatically hides any folders that do not contain workflows.\n"
+            "This is useful for browsing a clean list of your workflow templates."
+        )
+        self.chk_show_workflow_only.stateChanged.connect(self._on_show_workflow_only_changed)
+        layout.addWidget(self.chk_show_workflow_only)
+        
         btn_layout = QHBoxLayout()
         
         btn_remove = QPushButton("🗑️ Remove")
@@ -367,6 +379,99 @@ class WorkflowManagerWidget(BaseManagerWidget):
         btn_layout.addWidget(btn_remove)
         btn_layout.addWidget(btn_rename)
         layout.addLayout(btn_layout)
+
+    def _on_show_workflow_only_changed(self, state):
+        self.refresh_list()
+
+    def _filter_directories_by_extension(self, parent_path, dirs):
+        """Override to filter directories if 'Show workflow only' is checked."""
+        if not hasattr(self, 'chk_show_workflow_only') or not self.chk_show_workflow_only.isChecked():
+            return dirs
+            
+        filtered_dirs = []
+        for d in dirs:
+            dir_path = os.path.join(parent_path, d)
+            # Check if this directory or any of its subdirectories contain a ComfyUI workflow file (.json)
+            has_workflow = False
+            
+            # Optimization: Avoid deep recursion freezing
+            max_depth = 5 
+            base_depth = dir_path.count(os.sep)
+            
+            try:
+                for root, dir_names, files in os.walk(dir_path):
+                    current_depth = root.count(os.sep)
+                    if current_depth > base_depth + max_depth:
+                        del dir_names[:]
+                        continue
+                        
+                    # Optimization: Skip hidden directories and heavy dependencies to speed up scanning
+                    dir_names[:] = [
+                        dn for dn in dir_names 
+                        if not dn.startswith('.') and dn not in ('venv', 'node_modules', '__pycache__', '.git', 'models', 'custom_nodes')
+                    ]
+                    
+                    for f in files:
+                        if f.lower().endswith('.json'):
+                            json_path = os.path.join(root, f)
+                            if self._is_comfyui_workflow(json_path):
+                                has_workflow = True
+                                break
+                                
+                    if has_workflow:
+                        break
+            except OSError:
+                pass
+                
+            if has_workflow:
+                filtered_dirs.append(d)
+                
+        return filtered_dirs
+
+    def _filter_files_by_extension(self, parent_path, files):
+        """Override to filter files if 'Show workflow only' is checked."""
+        if not hasattr(self, 'chk_show_workflow_only') or not self.chk_show_workflow_only.isChecked():
+            return files
+            
+        filtered_files = []
+        for f in files:
+            file_path = f.get('path')
+            if file_path and file_path.lower().endswith('.json'):
+                if self._is_comfyui_workflow(file_path):
+                    filtered_files.append(f)
+            else:
+                filtered_files.append(f)
+                
+        return filtered_files
+
+    def _is_comfyui_workflow(self, filepath):
+        """Checks if a JSON file matches ComfyUI workflow structures."""
+        try:
+            import os
+            import re
+            
+            # Optimization: Prevent loading/testing massive JSON files memory to avoid UI freeze
+            if os.path.getsize(filepath) > 10 * 1024 * 1024:  # 10MB limit
+                return False
+                
+            # Perform a fast string check to prevent UI freezing from full JSON parsing (json.load).
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                # Read up to 256KB - enough to capture headers and early markers
+                head = f.read(256 * 1024)
+                
+                # 1. UI Workflow format: has "nodes" array and usually "last_node_id" or "last_link_id" near the top
+                # (We don't check for "links" here because it is often at the very end of large files)
+                if re.search(r'"nodes"\s*:\s*\[', head):
+                    if '"last_node_id"' in head or '"last_link_id"' in head or '"version"' in head:
+                        return True
+                    
+                # 2. API Workflow format: has "class_type" string and "inputs" object
+                if re.search(r'"class_type"\s*:\s*"[^"]+"', head) and re.search(r'"inputs"\s*:\s*\{', head):
+                    return True
+                    
+            return False
+        except Exception:
+            return False
 
     def remove_workflow(self):
         """
@@ -406,50 +511,17 @@ class WorkflowManagerWidget(BaseManagerWidget):
             
         QApplication.processEvents()
 
-        base_name = os.path.splitext(filename)[0]
-        dir_path = os.path.dirname(self.current_path)
+        # [Refactor] Delegate to BaseManagerWidget's centralized method
+        success, deleted_count, errors = self.remove_associated_files(self.current_path)
         
-        deleted_items = []
-        errors = []
-
-        try:
-            # 2. Delete Cache Directory
-            cache_dir = calculate_structure_path(self.current_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
-            if os.path.exists(cache_dir):
-                try:
-                    shutil.rmtree(cache_dir)
-                    deleted_items.append(f"Cache: {os.path.basename(cache_dir)}")
-                except Exception as e:
-                    errors.append(f"Failed to delete cache: {e}")
-
-            # 3. Delete Sibling Files (Preview/Thumbnail)
-            for f in os.listdir(dir_path):
-                f_path = os.path.join(dir_path, f)
-                if not os.path.isfile(f_path): continue
-                
-                f_base = os.path.splitext(f)[0]
-                # Careful not to delete other workflows if they share start, but here we usually rely on exact match or known extensions
-                if f_base == base_name:
-                    try:
-                        os.remove(f_path)
-                        deleted_items.append(f"File: {f}")
-                        if hasattr(self, 'image_loader_thread'):
-                            self.image_loader_thread.remove_from_cache(f_path)
-                    except Exception as e:
-                        errors.append(f"Failed to delete {f}: {e}")
-
-            # 4. Report & Refresh
-            if errors:
-                msg = "Completed with errors:\n" + "\n".join(errors)
-                QMessageBox.warning(self, "Delete Incomplete", msg)
-            else:
-                self.show_status_message(f"Deleted {len(deleted_items)} items.")
-                
-            self.current_path = None
-            self.refresh_list()
+        if errors:
+            msg = "Completed with errors:\n" + "\n".join(errors)
+            QMessageBox.warning(self, "Delete Incomplete", msg)
+        else:
+            self.show_status_message(f"Deleted {deleted_count} items.")
             
-        except Exception as e:
-             QMessageBox.critical(self, "Error", f"Critical error during delete: {e}")
+        self.current_path = None
+        self.refresh_list()
 
     def rename_workflow(self):
         """
@@ -467,21 +539,6 @@ class WorkflowManagerWidget(BaseManagerWidget):
         new_base, ok = QInputDialog.getText(self, "Rename Workflow", "New Name:", text=old_base)
         if not ok or not new_base: return
         
-        new_base = new_base.strip()
-        if new_base == old_base: return
-        
-        if re.search(r'[<>:\"/\\|?*]', new_base):
-             QMessageBox.warning(self, "Invalid Name", "Filename contains invalid characters.")
-             return
-
-        dir_path = os.path.dirname(self.current_path)
-        new_filename = new_base + ext
-        new_path = os.path.join(dir_path, new_filename)
-        
-        if os.path.exists(new_path):
-            QMessageBox.warning(self, "Error", "A file with that name already exists.")
-            return
-
         # 2. Unload resources
         if hasattr(self, 'preview_lbl'): 
             self.preview_lbl.clear_memory()
@@ -493,77 +550,24 @@ class WorkflowManagerWidget(BaseManagerWidget):
             
         QApplication.processEvents()
 
-        renamed_count = 0
-        errors = []
+        # [Refactor] Delegate to BaseManagerWidget's centralized method
+        success, renamed_count, errors = self.rename_associated_files(self.current_path, new_base)
 
-        try:
-            # 3. Rename Cache Directory
-            old_cache_dir = calculate_structure_path(self.current_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
-            new_fake_path = os.path.join(dir_path, new_filename)
-            new_cache_dir = calculate_structure_path(new_fake_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
-            
-            if os.path.exists(old_cache_dir):
-                if os.path.exists(new_cache_dir):
-                     errors.append(f"Target cache directory already exists: {os.path.basename(new_cache_dir)}")
-                else:
-                    try:
-                        os.rename(old_cache_dir, new_cache_dir)
-                        renamed_count += 1
-                        
-                        # [Fix] Rename internal files
-                        if os.path.exists(new_cache_dir):
-                            for inner_f in os.listdir(new_cache_dir):
-                                inner_path = os.path.join(new_cache_dir, inner_f)
-                                if not os.path.isfile(inner_path): continue
-                                
-                                if inner_f.startswith(old_base):
-                                    inner_suffix = inner_f[len(old_base):]
-                                    if inner_suffix.startswith(".") or inner_suffix == "":
-                                        new_inner_name = new_base + inner_suffix
-                                        new_inner_path = os.path.join(new_cache_dir, new_inner_name)
-                                        try:
-                                            os.rename(inner_path, new_inner_path)
-                                        except OSError as e:
-                                            errors.append(f"Failed to rename cache file {inner_f}: {e}")
+        if not success and errors and "A file with that name" in errors[0]:
+            QMessageBox.warning(self, "Error", errors[0])
+            return
+        elif not success and errors and "Invalid characters" in errors[0]:
+            QMessageBox.warning(self, "Invalid Name", errors[0])
+            return
 
-                    except Exception as e:
-                        errors.append(f"Failed to rename cache: {e}")
-
-            # 4. Rename Sibling Files
-            for f in os.listdir(dir_path):
-                f_path = os.path.join(dir_path, f)
-                if not os.path.isfile(f_path): continue
-                
-                f_name_lower = f.lower()
-                
-                # Careful with pattern matching
-                if f.startswith(old_base):
-                    suffix = f[len(old_base):]
-                    if suffix.startswith("."):
-                        new_f_name = new_base + suffix
-                        new_f_path = os.path.join(dir_path, new_f_name)
-                        
-                        try:
-                            # Verify if target exists? (Might happen if multiple extension overlap)
-                            os.rename(f_path, new_f_path)
-                            renamed_count += 1
-                            if hasattr(self, 'image_loader_thread'):
-                                self.image_loader_thread.remove_from_cache(f_path)
-                        except Exception as e:
-                            errors.append(f"Failed to rename {f}: {e}")
-
-            # 5. Report & Refresh
-            if errors:
-                msg = "Completed with errors:\n" + "\n".join(errors)
-                QMessageBox.warning(self, "Rename Incomplete", msg)
-            else:
-                self.show_status_message(f"Renamed {renamed_count} files/dirs.")
-            
-            self.current_path = None
-            self.refresh_list()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Critical error during rename: {e}")
+        if errors:
+            msg = "Completed with errors:\n" + "\n".join(errors)
+            QMessageBox.warning(self, "Rename Incomplete", msg)
+        else:
+            self.show_status_message(f"Renamed {renamed_count} files/dirs.")
+        
+        self.current_path = None
+        self.refresh_list()
 
 
 class WorkflowDraggableMediaWidget(SmartMediaWidget):

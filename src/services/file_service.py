@@ -53,7 +53,8 @@ class FileService:
                     cached_mtime = data.get("mtime_check")
                     if cached_hash and cached_mtime == file_mtime:
                         return cached_hash, True
-            except (OSError, json.JSONDecodeError): pass
+            except (OSError, json.JSONDecodeError) as e:
+                logging.debug(f"[FileService] Failed to read cached hash from {json_path}: {e}")
 
         # Calculate
         if status_signal: status_signal.emit("Calculating SHA256 (First run)...")
@@ -67,7 +68,8 @@ class FileService:
             if os.path.exists(json_path):
                 try:
                     with open(json_path, 'r', encoding='utf-8') as f: new_data = json.load(f)
-                except Exception: pass
+                except Exception as e:
+                    logging.debug(f"[FileService] Failed to read existing JSON to update: {e}")
             
             new_data["sha256"] = calculated_hash
             new_data["mtime_check"] = file_mtime

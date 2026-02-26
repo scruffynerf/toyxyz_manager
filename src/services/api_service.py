@@ -50,7 +50,8 @@ class ApiService:
         url = f"https://huggingface.co/{repo_id}/resolve/main/README.md"
         try:
             return self.client.get(url).text
-        except Exception:
+        except Exception as e:
+            logging.debug(f"[ApiService] README fetch error: {e}")
             return "*No README.md found.*"
 
     def download_file(self, url, dest_dir):

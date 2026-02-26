@@ -253,8 +253,8 @@ class SmartMediaWidget(QWidget):
         self._stop_movie() # [Animation]
         self.lbl_image.clear()
         self.play_timer.stop()
-        self._destroy_video_components() 
-        gc.collect() # Optional but helpful for large media 
+        self._destroy_video_components()
+        # 불필요한 gc.collect() 강제 호출 제거
 
     def _start_video_playback(self):
         if self.current_path and self.is_video and os.path.exists(self.current_path):

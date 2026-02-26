@@ -345,10 +345,22 @@ class BaseManagerWidget(QWidget):
         self.tree.setSortingEnabled(True)
         # self.show_status_message(f"Scan complete. {self.tree.topLevelItemCount()} items.")
 
+    def _filter_directories_by_extension(self, parent_path, dirs):
+        """Hook for subclasses to filter the list of directories before they are added to the tree."""
+        return dirs
+
+    def _filter_files_by_extension(self, parent_path, files):
+        """Hook for subclasses to filter the list of files before they are added to the tree."""
+        return files
+
     def _populate_item(self, parent_item, current_path, data):
         # ... (Unchanged logic, just ensure no sorting calls here)
         # 1. Add Folders
         dirs = data.get("dirs", [])
+        
+        # Apply subclass-specific filtering
+        dirs = self._filter_directories_by_extension(current_path, dirs)
+        
         # Sort folders by name
         dirs.sort(key=lambda s: s.lower())
         
@@ -366,6 +378,10 @@ class BaseManagerWidget(QWidget):
 
         # 2. Add Files
         files = data.get("files", [])
+        
+        # Apply subclass-specific filtering
+        files = self._filter_files_by_extension(current_path, files)
+        
         # Files are already sorted or we can sort here
         files.sort(key=lambda x: x['name'].lower())
         
@@ -734,6 +750,149 @@ class BaseManagerWidget(QWidget):
             f = os.path.dirname(self.current_path)
             try: os.startfile(f)
             except OSError: pass
+
+    # === Shared File Operations (Delete / Rename) ===
+    
+    def remove_associated_files(self, file_path):
+        """
+        [Refactor] Centralized logic to permanently delete a main file, its cache directory, 
+        and any associated sibling files (like thumbnails or previews) that share the same base name.
+        Returns: (success_bool, deleted_count, error_messages_list)
+        """
+        import shutil
+        from ..core import calculate_structure_path
+        
+        if not file_path or not os.path.exists(file_path):
+            return False, 0, ["Selection does not exist."]
+            
+        filename = os.path.basename(file_path)
+        base_name = os.path.splitext(filename)[0]
+        dir_path = os.path.dirname(file_path)
+        
+        deleted_items = []
+        errors = []
+
+        try:
+            # 1. Delete Cache Directory
+            cache_dir = calculate_structure_path(file_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            if os.path.exists(cache_dir):
+                try:
+                    shutil.rmtree(cache_dir)
+                    deleted_items.append(f"Cache: {os.path.basename(cache_dir)}")
+                except Exception as e:
+                    errors.append(f"Failed to delete cache: {e}")
+
+            # 2. Delete Sibling Files (including main file, preview, thumbnail)
+            for f in os.listdir(dir_path):
+                f_path = os.path.join(dir_path, f)
+                if not os.path.isfile(f_path): continue
+                
+                f_base = os.path.splitext(f)[0]
+                if f_base == base_name:
+                    try:
+                        os.remove(f_path)
+                        deleted_items.append(f"File: {f}")
+                        # Also remove from loader cache just in case
+                        if hasattr(self, 'image_loader_thread'):
+                            self.image_loader_thread.remove_from_cache(f_path)
+                    except Exception as e:
+                        errors.append(f"Failed to delete {f}: {e}")
+
+            return len(errors) == 0, len(deleted_items), errors
+            
+        except Exception as e:
+             return False, 0, [f"Critical error during delete: {e}"]
+
+    def rename_associated_files(self, file_path, new_base_name):
+        """
+        [Refactor] Centralized logic to rename a main file, its cache directory, 
+        and associated sibling files (like thumbnails or previews).
+        Returns: (success_bool, renamed_count, error_messages_list)
+        """
+        import shutil
+        from ..core import calculate_structure_path
+        import re
+        
+        if not file_path or not os.path.exists(file_path):
+            return False, 0, ["Selection does not exist."]
+
+        old_filename = os.path.basename(file_path)
+        old_base = os.path.splitext(old_filename)[0]
+        ext = os.path.splitext(old_filename)[1]
+        
+        new_base_name = new_base_name.strip()
+        if not new_base_name or new_base_name == old_base:
+            return False, 0, ["Invalid or identical name."]
+            
+        # Validate Filename characters
+        if re.search(r'[<>:\"/\\|?*]', new_base_name):
+             return False, 0, ["Filename contains invalid characters."]
+
+        dir_path = os.path.dirname(file_path)
+        new_filename = new_base_name + ext
+        new_path = os.path.join(dir_path, new_filename)
+        
+        if os.path.exists(new_path):
+            return False, 0, ["A file with that name already exists."]
+
+        renamed_count = 0
+        errors = []
+
+        try:
+            # 1. Rename Cache Directory
+            old_cache_dir = calculate_structure_path(file_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            new_fake_path = os.path.join(dir_path, new_filename)
+            new_cache_dir = calculate_structure_path(new_fake_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            
+            if os.path.exists(old_cache_dir):
+                if os.path.exists(new_cache_dir):
+                     errors.append(f"Target cache directory already exists: {os.path.basename(new_cache_dir)}")
+                else:
+                    try:
+                        os.rename(old_cache_dir, new_cache_dir)
+                        renamed_count += 1
+                        
+                        # Rename files INSIDE the cache directory
+                        if os.path.exists(new_cache_dir):
+                            for inner_f in os.listdir(new_cache_dir):
+                                inner_path = os.path.join(new_cache_dir, inner_f)
+                                if not os.path.isfile(inner_path): continue
+                                
+                                if inner_f.startswith(old_base):
+                                    inner_suffix = inner_f[len(old_base):]
+                                    if inner_suffix.startswith(".") or inner_suffix == "":
+                                        new_inner_name = new_base_name + inner_suffix
+                                        new_inner_path = os.path.join(new_cache_dir, new_inner_name)
+                                        try:
+                                            os.rename(inner_path, new_inner_path)
+                                        except OSError as e:
+                                            errors.append(f"Failed to rename cache file {inner_f}: {e}")
+                    except Exception as e:
+                        errors.append(f"Failed to rename cache: {e}")
+
+            # 2. Rename Sibling Files
+            for f in os.listdir(dir_path):
+                f_path = os.path.join(dir_path, f)
+                if not os.path.isfile(f_path): continue
+                
+                if f.startswith(old_base):
+                    suffix = f[len(old_base):]
+                    if suffix.startswith("."):
+                        new_f_name = new_base_name + suffix
+                        new_f_path = os.path.join(dir_path, new_f_name)
+                        
+                        try:
+                            os.rename(f_path, new_f_path)
+                            renamed_count += 1
+                            if hasattr(self, 'image_loader_thread'):
+                                self.image_loader_thread.remove_from_cache(f_path)
+                        except Exception as e:
+                            errors.append(f"Failed to rename {f}: {e}")
+
+            return len(errors) == 0, renamed_count, errors
+            
+        except Exception as e:
+            return False, 0, [f"Critical error during rename: {e}"]
 
     # Re-implementing helper methods to be used by subclasses
     
