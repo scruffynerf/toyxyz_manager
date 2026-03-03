@@ -24,9 +24,13 @@ Requires Python 3.12 or higher.
 
 Run `setup_env.bat`. Wait until the venv (virtual environment) is installed. Once complete, close the window.
 
+For Linux, set up a venv with `python -m venv venv`, and then `source venv/bin/activate` and then `pip install -r requirements.txt`
+
 2. **Execution**
 
 Run `run.bat` or `launcher.vbs`. Both perform the same function; however, `run.bat` will display the command prompt (CMD) window. Use `run.bat` if you need to check for errors. If everything is working correctly, use `launcher.vbs`.
+
+For Linux, just `python main.py` and it will run and pop up the GUI.
 
 ---
 
