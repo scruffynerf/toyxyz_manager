@@ -238,8 +238,7 @@ class FileScannerWorker(QThread):
                         if not self._is_running: return
                         
                         if entry.is_dir():
-                            if entry.is_symlink(): continue
-                                
+                            # Remove symlink skipping to support symlinked models/workflows directory structures
                             real_path = os.path.realpath(entry.path)
                             if real_path in visited: continue
                             visited.add(real_path)
@@ -321,8 +320,7 @@ class FileSearchWorker(QThread):
                         if not self._is_running: break
                         
                         if entry.is_dir():
-                            if entry.is_symlink(): continue
-                            
+                            # Allow directory symlinks
                             real_path = os.path.realpath(entry.path)
                             if real_path in visited: continue
                             visited.add(real_path)

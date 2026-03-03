@@ -399,7 +399,7 @@ class WorkflowManagerWidget(BaseManagerWidget):
             base_depth = dir_path.count(os.sep)
             
             try:
-                for root, dir_names, files in os.walk(dir_path):
+                for root, dir_names, files in os.walk(dir_path, followlinks=True):
                     current_depth = root.count(os.sep)
                     if current_depth > base_depth + max_depth:
                         del dir_names[:]

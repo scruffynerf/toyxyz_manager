@@ -844,12 +844,52 @@ class SettingsDialog(QDialog):
         # General Settings Group
         grp_gen = QGroupBox("General")
         form_layout = QFormLayout(grp_gen)
-        self.entry_civitai_key = QLineEdit(self.settings.get("civitai_api_key", ""))
-        self.entry_civitai_key.setPlaceholderText("Paste your Civitai API Key here")
-        form_layout.addRow("Civitai API Key:", self.entry_civitai_key)
-        self.entry_hf_key = QLineEdit(self.settings.get("hf_api_key", ""))
-        self.entry_hf_key.setPlaceholderText("Paste your Hugging Face Token here (Optional)")
-        form_layout.addRow("Hugging Face Token:", self.entry_hf_key)
+        
+        self.civitai_deleted = False
+        self.hf_deleted = False
+
+        civitai_key = self.settings.get("civitai_api_key", "")
+        self.entry_civitai_key = QLineEdit()
+        
+        civitai_layout = QHBoxLayout()
+        civitai_layout.setContentsMargins(0, 0, 0, 0)
+        civitai_layout.addWidget(self.entry_civitai_key)
+        self.btn_civitai_del = QPushButton("❌")
+        self.btn_civitai_del.setToolTip("Delete Token")
+        self.btn_civitai_del.setFixedWidth(30)
+        self.btn_civitai_del.clicked.connect(self.delete_civitai)
+        civitai_layout.addWidget(self.btn_civitai_del)
+
+        if civitai_key:
+            # Show first 8 chars of token for civitai (or less if short)
+            visible_part = civitai_key[:8] + "..." if len(civitai_key) > 8 else civitai_key
+            self.entry_civitai_key.setPlaceholderText(f"Token is stored (saved: {visible_part}). Enter new token to replace.")
+        else:
+            self.entry_civitai_key.setPlaceholderText("Paste your Civitai API Key here")
+            self.btn_civitai_del.hide()
+        form_layout.addRow("Civitai API Key:", civitai_layout)
+        
+        hf_key = self.settings.get("hf_api_key", "")
+        self.entry_hf_key = QLineEdit()
+        
+        hf_layout = QHBoxLayout()
+        hf_layout.setContentsMargins(0, 0, 0, 0)
+        hf_layout.addWidget(self.entry_hf_key)
+        self.btn_hf_del = QPushButton("❌")
+        self.btn_hf_del.setToolTip("Delete Token")
+        self.btn_hf_del.setFixedWidth(30)
+        self.btn_hf_del.clicked.connect(self.delete_hf)
+        hf_layout.addWidget(self.btn_hf_del)
+
+        if hf_key:
+            # Show first 5 chars of token for huggingface (or less if short)
+            visible_part = hf_key[:5] + "..." if len(hf_key) > 5 else hf_key
+            self.entry_hf_key.setPlaceholderText(f"Token is stored (saved: {visible_part}). Enter new token to replace.")
+        else:
+            self.entry_hf_key.setPlaceholderText("Paste your Hugging Face Token here (Optional)")
+            self.btn_hf_del.hide()
+        form_layout.addRow("Hugging Face Token:", hf_layout)
+        
         self.entry_cache = QLineEdit(self.settings.get("cache_path", ""))
         self.entry_cache.setPlaceholderText("Default: ./cache (Leave empty for default)")
         btn_browse_cache = QPushButton("📂")
@@ -1004,10 +1044,32 @@ class SettingsDialog(QDialog):
         d = QFileDialog.getExistingDirectory(self, "Select Cache Folder", self.entry_cache.text())
         if d: self.entry_cache.setText(d)
 
+    def delete_civitai(self):
+        self.civitai_deleted = True
+        self.entry_civitai_key.clear()
+        self.entry_civitai_key.setPlaceholderText("Paste your Civitai API Key here")
+        self.btn_civitai_del.hide()
+
+    def delete_hf(self):
+        self.hf_deleted = True
+        self.entry_hf_key.clear()
+        self.entry_hf_key.setPlaceholderText("Paste your Hugging Face Token here (Optional)")
+        self.btn_hf_del.hide()
+
     def accept(self):
         # Save state before closing
-        self.settings["civitai_api_key"] = self.entry_civitai_key.text().strip()
-        self.settings["hf_api_key"] = self.entry_hf_key.text().strip()
+        new_civitai = self.entry_civitai_key.text().strip()
+        if new_civitai:
+            self.settings["civitai_api_key"] = new_civitai
+        elif getattr(self, "civitai_deleted", False):
+            self.settings["civitai_api_key"] = ""
+            
+        new_hf = self.entry_hf_key.text().strip()
+        if new_hf:
+            self.settings["hf_api_key"] = new_hf
+        elif getattr(self, "hf_deleted", False):
+            self.settings["hf_api_key"] = ""
+            
         self.settings["cache_path"] = self.entry_cache.text().strip()
 
         
