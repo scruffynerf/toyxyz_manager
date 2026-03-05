@@ -43,13 +43,39 @@ class SortableTreeItem(QTreeWidgetItem):
         
         if my_type != other_type:
             # If I am folder (0) and other is file (1)
-            # We want me < other
+            # We want me < other -> True
+            # But if the current SortOrder is Descending, Qt will reverse the return value.
+            # To ALWAYS keep folders on top regardless of Ascending/Descending, we must adjust.
+            tree = self.treeWidget()
+            if tree and tree.header().sortIndicatorOrder() == Qt.DescendingOrder:
+                # In descending, Qt reverses our result. To keep folder falling 'first', return False.
+                return my_type != "folder"
             return my_type == "folder"
             
-        # Same type: sort by text (case insensitive)
-        t1 = self.text(0).lower()
-        t2 = other.text(0).lower()
-        return t1 < t2
+        tree = self.treeWidget()
+        column = tree.sortColumn() if tree else 0
+
+        # Sort by Size
+        if column == 1:
+            size1 = self.data(0, Qt.UserRole + 2) or 0
+            size2 = other.data(0, Qt.UserRole + 2) or 0
+            if size1 != size2:
+                return size1 < size2
+        # Sort by Date
+        elif column == 2:
+            time1 = self.data(0, Qt.UserRole + 3) or 0
+            time2 = other.data(0, Qt.UserRole + 3) or 0
+            if time1 != time2:
+                return time1 < time2
+            
+        # Fallback to column text sorting (Format or Name)
+        t1 = self.text(column).lower()
+        t2 = other.text(column).lower()
+        if t1 != t2:
+            return t1 < t2
+            
+        # Fallback to Name sorting if current column values are equal
+        return self.text(0).lower() < other.text(0).lower()
 
 class BaseManagerWidget(QWidget):
     def __init__(self, directories: Dict[str, Any], extensions, app_settings: Dict[str, Any] = None):
@@ -237,6 +263,10 @@ class BaseManagerWidget(QWidget):
         self.folder_combo.blockSignals(False)
         if self.directories: self.refresh_list()
 
+    def get_scanner_filter_mode(self):
+        """Hook for subclasses to provide a specific filter mode to the background scanner."""
+        return None
+
     def refresh_list(self):
         if self.folder_combo.count() == 0: return
         name = self.folder_combo.currentText()
@@ -287,16 +317,18 @@ class BaseManagerWidget(QWidget):
         # [Thread Safety] Track active thumbnail workers
         self.active_thumb_workers = set()
         
+        filter_mode = self.get_scanner_filter_mode()
+        
         # 1. UI Scanner (Fast, Non-Recursive)
         self.tree.setSortingEnabled(False) # [Optimization] Disable sorting for entire scan
-        self.scanner = FileScannerWorker(path, self.extensions, recursive=False)
+        self.scanner = FileScannerWorker(path, self.extensions, recursive=False, filter_mode=filter_mode)
         self.scanner.batch_ready.connect(self._on_batch_ready)
         self.scanner.finished.connect(self._on_scan_finished) # [Optimization] New slot
         self.scanner.finished.connect(self.scanner.deleteLater) 
         self.scanner.start()
         
         # 2. Indexing Scanner (Background, Recursive for full duplicate check)
-        self.indexing_scanner = FileScannerWorker(path, self.extensions, recursive=True)
+        self.indexing_scanner = FileScannerWorker(path, self.extensions, recursive=True, filter_mode=filter_mode)
         self.indexing_scanner.setObjectName("IndexingScannerThread")
         self.indexing_scanner.batch_ready.connect(self._on_indexing_batch_ready)
         self.indexing_scanner.finished.connect(self.indexing_scanner.deleteLater)
@@ -394,6 +426,8 @@ class BaseManagerWidget(QWidget):
             f_item.setText(3, ext)
             f_item.setData(0, Qt.UserRole, f['path'])
             f_item.setData(0, Qt.UserRole + 1, "file")
+            f_item.setData(0, Qt.UserRole + 2, f.get('raw_size', 0))
+            f_item.setData(0, Qt.UserRole + 3, f.get('raw_date', 0))
             
             # [Duplicate Check] Update Global File Map (Initial visible items)
             f_name_lower = f['name'].lower()
@@ -463,7 +497,7 @@ class BaseManagerWidget(QWidget):
             
             self.tree.setSortingEnabled(False) # [Optimization] Disable sort for lazy load
             
-            worker = FileScannerWorker(path, self.extensions, recursive=False)
+            worker = FileScannerWorker(path, self.extensions, recursive=False, filter_mode=self.get_scanner_filter_mode())
             # Connect to batch signal, reusing the logic to populate THIS item
             worker.batch_ready.connect(lambda p, d, f: self._on_partial_batch_ready(item, p, d, f))
             worker.finished.connect(lambda: self.tree.setSortingEnabled(True)) # [Optimization] Re-enable
@@ -521,7 +555,11 @@ class BaseManagerWidget(QWidget):
 
         if hasattr(self, 'search_worker'):
             try:
-                if self.search_worker.isRunning(): self.search_worker.stop()
+                if self.search_worker.isRunning():
+                    self.search_worker.stop()
+                    self.search_worker.wait()
+                try: self.search_worker.finished.disconnect()
+                except RuntimeError: pass
             except RuntimeError: pass
 
         self.tree.clear()
@@ -590,6 +628,8 @@ class BaseManagerWidget(QWidget):
             
             item.setData(0, Qt.UserRole, path)
             item.setData(0, Qt.UserRole + 1, "file")
+            item.setData(0, Qt.UserRole + 2, size_bytes)
+            item.setData(0, Qt.UserRole + 3, mtime)
 
     def cancel_search(self):
         self.filter_edit.clear()

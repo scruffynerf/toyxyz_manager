@@ -383,95 +383,11 @@ class WorkflowManagerWidget(BaseManagerWidget):
     def _on_show_workflow_only_changed(self, state):
         self.refresh_list()
 
-    def _filter_directories_by_extension(self, parent_path, dirs):
-        """Override to filter directories if 'Show workflow only' is checked."""
-        if not hasattr(self, 'chk_show_workflow_only') or not self.chk_show_workflow_only.isChecked():
-            return dirs
-            
-        filtered_dirs = []
-        for d in dirs:
-            dir_path = os.path.join(parent_path, d)
-            # Check if this directory or any of its subdirectories contain a ComfyUI workflow file (.json)
-            has_workflow = False
-            
-            # Optimization: Avoid deep recursion freezing
-            max_depth = 5 
-            base_depth = dir_path.count(os.sep)
-            
-            try:
-                for root, dir_names, files in os.walk(dir_path, followlinks=True):
-                    current_depth = root.count(os.sep)
-                    if current_depth > base_depth + max_depth:
-                        del dir_names[:]
-                        continue
-                        
-                    # Optimization: Skip hidden directories and heavy dependencies to speed up scanning
-                    dir_names[:] = [
-                        dn for dn in dir_names 
-                        if not dn.startswith('.') and dn not in ('venv', 'node_modules', '__pycache__', '.git', 'models', 'custom_nodes')
-                    ]
-                    
-                    for f in files:
-                        if f.lower().endswith('.json'):
-                            json_path = os.path.join(root, f)
-                            if self._is_comfyui_workflow(json_path):
-                                has_workflow = True
-                                break
-                                
-                    if has_workflow:
-                        break
-            except OSError:
-                pass
-                
-            if has_workflow:
-                filtered_dirs.append(d)
-                
-        return filtered_dirs
-
-    def _filter_files_by_extension(self, parent_path, files):
-        """Override to filter files if 'Show workflow only' is checked."""
-        if not hasattr(self, 'chk_show_workflow_only') or not self.chk_show_workflow_only.isChecked():
-            return files
-            
-        filtered_files = []
-        for f in files:
-            file_path = f.get('path')
-            if file_path and file_path.lower().endswith('.json'):
-                if self._is_comfyui_workflow(file_path):
-                    filtered_files.append(f)
-            else:
-                filtered_files.append(f)
-                
-        return filtered_files
-
-    def _is_comfyui_workflow(self, filepath):
-        """Checks if a JSON file matches ComfyUI workflow structures."""
-        try:
-            import os
-            import re
-            
-            # Optimization: Prevent loading/testing massive JSON files memory to avoid UI freeze
-            if os.path.getsize(filepath) > 10 * 1024 * 1024:  # 10MB limit
-                return False
-                
-            # Perform a fast string check to prevent UI freezing from full JSON parsing (json.load).
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                # Read up to 256KB - enough to capture headers and early markers
-                head = f.read(256 * 1024)
-                
-                # 1. UI Workflow format: has "nodes" array and usually "last_node_id" or "last_link_id" near the top
-                # (We don't check for "links" here because it is often at the very end of large files)
-                if re.search(r'"nodes"\s*:\s*\[', head):
-                    if '"last_node_id"' in head or '"last_link_id"' in head or '"version"' in head:
-                        return True
-                    
-                # 2. API Workflow format: has "class_type" string and "inputs" object
-                if re.search(r'"class_type"\s*:\s*"[^"]+"', head) and re.search(r'"inputs"\s*:\s*\{', head):
-                    return True
-                    
-            return False
-        except Exception:
-            return False
+    def get_scanner_filter_mode(self):
+        """Override to pass filter mode to FileScannerWorker."""
+        if hasattr(self, 'chk_show_workflow_only') and self.chk_show_workflow_only.isChecked():
+            return "workflow_template"
+        return None
 
     def remove_workflow(self):
         """

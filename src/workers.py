@@ -197,18 +197,67 @@ class FileScannerWorker(QThread):
     batch_ready = Signal(str, list, list) 
     finished = Signal(dict)
 
-    def __init__(self, base_path, extensions, recursive=True, max_depth=20):
+    def __init__(self, base_path, extensions, recursive=True, max_depth=20, filter_mode=None):
         super().__init__()
         self.setObjectName("ScannerThread")
         self.base_path = base_path
         self.extensions = extensions
         self.recursive = recursive
+        self.filter_mode = filter_mode
         self._is_running = True
         self.CHUNK_SIZE = 2000 # [Optimization] Increase batch size to reduce UI spam
         self.max_depth = max_depth # [Fix] Max depth to prevent deep tree freezing
 
     def stop(self):
         self._is_running = False
+
+    def _is_comfyui_workflow(self, filepath):
+        """Checks if a JSON file matches ComfyUI workflow structures without loading fully into memory."""
+        try:
+            if os.path.getsize(filepath) > 10 * 1024 * 1024:  # 10MB limit
+                return False
+                
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                head = f.read(256 * 1024)
+                
+                # 1. UI Workflow format
+                if re.search(r'"nodes"\s*:\s*\[', head):
+                    if '"last_node_id"' in head or '"last_link_id"' in head or '"version"' in head:
+                        return True
+                    
+                # 2. API Workflow format
+                if re.search(r'"class_type"\s*:\s*"[^"]+"', head) and re.search(r'"inputs"\s*:\s*\{', head):
+                    return True
+                    
+            return False
+        except Exception:
+            return False
+
+    def _has_workflow(self, dir_path):
+        """Recursively checks if a directory contains any comfyui workflow file, up to a shallow depth."""
+        try:
+            max_depth = 5 
+            base_depth = dir_path.count(os.sep)
+            
+            for root, dir_names, files in os.walk(dir_path, followlinks=True):
+                current_depth = root.count(os.sep)
+                if current_depth > base_depth + max_depth:
+                    del dir_names[:]
+                    continue
+                    
+                dir_names[:] = [
+                    dn for dn in dir_names 
+                    if not dn.startswith('.') and dn not in ('venv', 'node_modules', '__pycache__', '.git', 'models', 'custom_nodes')
+                ]
+                
+                for f in files:
+                    if f.lower().endswith('.json'):
+                        json_path = os.path.join(root, f)
+                        if self._is_comfyui_workflow(json_path):
+                            return True
+            return False
+        except OSError:
+            return False
 
     def run(self):
         if not os.path.exists(self.base_path):
@@ -242,6 +291,11 @@ class FileScannerWorker(QThread):
                             real_path = os.path.realpath(entry.path)
                             if real_path in visited: continue
                             visited.add(real_path)
+                            
+                            # [Feature] Async filtering in background thread for empty folders
+                            if self.filter_mode == "workflow_template":
+                                if not self._has_workflow(entry.path):
+                                    continue
 
                             dirs_buffer.append(entry.name)
                             if self.recursive:
@@ -249,6 +303,10 @@ class FileScannerWorker(QThread):
                         
                         elif entry.is_file():
                              if os.path.splitext(entry.name)[1].lower() in self.extensions:
+                                 # [Feature] Async filtering in background thread
+                                 if self.filter_mode == "workflow_template" and entry.name.lower().endswith('.json'):
+                                     if not self._is_comfyui_workflow(entry.path):
+                                         continue
                                  try:
                                      st = entry.stat()
                                      sz = format_size(st.st_size)
@@ -257,7 +315,9 @@ class FileScannerWorker(QThread):
                                          "name": entry.name, 
                                          "path": entry.path, 
                                          "size": sz, 
-                                         "date": dt
+                                         "date": dt,
+                                         "raw_size": st.st_size,
+                                         "raw_date": st.st_mtime
                                      })
                                      
                                      if len(files_buffer) >= self.CHUNK_SIZE:
