@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QDialog, QLineEdit, QFileDialog, QDialogButtonBox, 
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, 
     QFormLayout, QSpinBox, QListWidget, QInputDialog, QGridLayout, QGroupBox, 
-    QApplication, QMessageBox, QComboBox, QTextBrowser, QTextEdit
+    QApplication, QMessageBox, QComboBox, QTextBrowser, QTextEdit, QCheckBox
 )
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QMimeData, QSize, QBuffer, QByteArray
 from PySide6.QtGui import QPixmap, QDrag, QBrush, QColor, QImageReader, QMovie
@@ -900,9 +900,15 @@ class SettingsDialog(QDialog):
         cache_layout.addWidget(self.entry_cache)
         cache_layout.addWidget(btn_browse_cache)
         form_layout.addRow("Cache Folder:", cache_layout)
+        
+        # [Feature] Duplicate filename detection toggle
+        self.chk_show_duplicates = QCheckBox("Show Duplicate Filenames")
+        self.chk_show_duplicates.setToolTip("When enabled, scans all registered folders to detect and warn about files with identical names.")
+        self.chk_show_duplicates.setChecked(self.settings.get("show_duplicates", False))
+        form_layout.addRow("", self.chk_show_duplicates)
+        
         layout.addWidget(grp_gen)
         
-
         
         # Directory Settings Group
         grp_dir = QGroupBox("Registered Folders")
@@ -1071,6 +1077,7 @@ class SettingsDialog(QDialog):
             self.settings["hf_api_key"] = ""
             
         self.settings["cache_path"] = self.entry_cache.text().strip()
+        self.settings["show_duplicates"] = self.chk_show_duplicates.isChecked()
 
         
         self.result_data = {

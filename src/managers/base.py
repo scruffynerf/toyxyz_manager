@@ -340,13 +340,19 @@ class BaseManagerWidget(QWidget):
         self.scanner.start()
         
         # 2. Indexing Scanner (Background, Recursive for full duplicate check)
-        self.indexing_scanner = FileScannerWorker(path, self.extensions, recursive=True, filter_mode=filter_mode)
-        self.indexing_scanner.setObjectName("IndexingScannerThread")
-        self.indexing_scanner.batch_ready.connect(self._on_indexing_batch_ready)
-        self.indexing_scanner.finished.connect(self.indexing_scanner.deleteLater)
-        self.indexing_scanner.start()
-        # [Optimization] Low priority for background indexing to prevent UI jank
-        self.indexing_scanner.setPriority(QThread.LowPriority)
+        # [Feature] Only start if "show_duplicates" setting is enabled
+        if self.app_settings.get("show_duplicates", False):
+            self.indexing_scanner = FileScannerWorker(path, self.extensions, recursive=True, filter_mode=filter_mode)
+            self.indexing_scanner.setObjectName("IndexingScannerThread")
+            self.indexing_scanner.batch_ready.connect(self._on_indexing_batch_ready)
+            self.indexing_scanner.finished.connect(self.indexing_scanner.deleteLater)
+            self.indexing_scanner.start()
+            # [Optimization] Low priority for background indexing to prevent UI jank
+            self.indexing_scanner.setPriority(QThread.LowPriority)
+        else:
+            # [Fix] Explicitly hide stale duplicate warning when setting is off
+            if hasattr(self, 'lbl_duplicate_warning'):
+                self.lbl_duplicate_warning.hide()
         
         # Disable Back button when in normal list view
         if hasattr(self, 'btn_search_back'):
@@ -476,6 +482,7 @@ class BaseManagerWidget(QWidget):
 
     def _refresh_duplicate_warning(self):
         if self.get_mode() == "gallery": return
+        if not self.app_settings.get("show_duplicates", False): return
 
         # Subclasses can override or we implement generic if label is standard
         # ModelManagerWidget has lbl_duplicate_warning
@@ -1145,7 +1152,7 @@ class BaseManagerWidget(QWidget):
             date_str = "Error"
             
         # Duplicate Check
-        if self.get_mode() != "gallery" and hasattr(self, 'file_map') and self.lbl_duplicate_warning:
+        if self.app_settings.get("show_duplicates", False) and self.get_mode() != "gallery" and hasattr(self, 'file_map') and self.lbl_duplicate_warning:
             f_name_lower = filename.lower()
             duplicates = self.file_map.get(f_name_lower, [])
             if len(duplicates) > 1:
