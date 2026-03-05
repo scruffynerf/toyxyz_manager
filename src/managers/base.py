@@ -85,6 +85,7 @@ class BaseManagerWidget(QWidget):
         self.app_settings = app_settings or {}
         self.current_path = None
         self.active_scanners = []
+        self._zombie_workers = [] # [Fix] Hold references to stopped workers until deleteLater completes
         self.image_loader_thread = ImageLoader()
         self.image_loader_thread.start()
         self._init_base_ui()
@@ -282,6 +283,8 @@ class BaseManagerWidget(QWidget):
                  if self.indexing_scanner.isRunning():
                      self.indexing_scanner.stop()
                      self.indexing_scanner.wait()
+                 # [Fix] Keep Python reference alive so deleteLater doesn't segfault
+                 self._zombie_workers.append(self.indexing_scanner)
              except RuntimeError: pass
 
         # [Fix] Stop all active partial scanners to prevent zombie signals
@@ -291,6 +294,7 @@ class BaseManagerWidget(QWidget):
                     if scanner.isRunning():
                         scanner.stop()
                         scanner.wait()
+                    self._zombie_workers.append(scanner)
                 except RuntimeError: pass
             self.active_scanners.clear()
 
@@ -300,12 +304,20 @@ class BaseManagerWidget(QWidget):
                 if self.scanner.isRunning():
                     self.scanner.stop()
                     self.scanner.wait()
-                # [Fix] Disconnect signals to prevent processing pending batches from the dead scanner
                 try: self.scanner.batch_ready.disconnect()
                 except RuntimeError: pass
                 try: self.scanner.finished.disconnect()
                 except RuntimeError: pass
+                # [Fix] Keep Python reference alive
+                self._zombie_workers.append(self.scanner)
             except RuntimeError: pass
+            
+        # [Fix] Clean up dead zombies from previous cycles
+        self._zombie_workers = [w for w in self._zombie_workers if w and not w.isRunning() and not w.isFinished()] 
+        # Actually isFinished() will be True, so the above filter might drop them too fast. 
+        # Just keep a bounded list to avoid memory leaks but guarantee survival across the event cycle.
+        if len(self._zombie_workers) > 20:
+            self._zombie_workers = self._zombie_workers[-20:]
 
         self.tree.clear()
         self.filter_edit.clear()
@@ -560,6 +572,7 @@ class BaseManagerWidget(QWidget):
                     self.search_worker.wait()
                 try: self.search_worker.finished.disconnect()
                 except RuntimeError: pass
+                self._zombie_workers.append(self.search_worker)
             except RuntimeError: pass
 
         self.tree.clear()

@@ -86,18 +86,43 @@ def sanitize_filename(filename: str) -> str:
 def calculate_structure_path(model_path: str, cache_root: str, directories: Dict[str, Any], mode: str = "model") -> str:
     """
     Calculates the structured cache path.
-    New Strategy: Flat structure based on Mode and Filename.
-    Path: cache_root/<mode>/<model_name>
-    Directories argument is kept for signature compatibility but not strictly needed for flat structure logic,
-    unless we want to validate something.
+    New Strategy: Hierarchical structure based on base directory aliases and relative paths.
+    Path: cache_root/<mode>/<Alias>/<Relative_Path>/<model_name>
     """
     model_name = os.path.splitext(os.path.basename(model_path))[0]
     
-    # Sanitize mode just in case
     safe_mode = sanitize_filename(mode)
     if not safe_mode: safe_mode = "model"
     
-    return os.path.join(cache_root, safe_mode, model_name)
+    model_path_norm = os.path.normpath(model_path)
+    
+    relative_structure = ""
+    matched_alias = None
+    
+    for alias, data in directories.items():
+        base_path = data.get("path") if isinstance(data, dict) else data
+        base_path_norm = os.path.normpath(base_path)
+        
+        try:
+            rel = os.path.relpath(model_path_norm, base_path_norm)
+            if not rel.startswith("..") and not os.path.isabs(rel):
+                matched_alias = sanitize_filename(alias)
+                dirname = os.path.dirname(rel)
+                if dirname:
+                    relative_structure = os.path.join(matched_alias, dirname)
+                else:
+                    relative_structure = matched_alias
+                break
+        except ValueError:
+            # handle cross-drive issues on Windows
+            pass
+            
+    if not matched_alias:
+        import hashlib
+        hash_suffix = hashlib.md5(model_path_norm.encode('utf-8')).hexdigest()[:8]
+        relative_structure = f"_external_{hash_suffix}"
+        
+    return os.path.join(cache_root, safe_mode, relative_structure, model_name)
 
 # ==========================================
 # Config Management
