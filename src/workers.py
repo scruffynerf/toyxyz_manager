@@ -689,11 +689,18 @@ class MetadataWorker(QThread):
                             logging.warning(f"[AutoConvert] Failed to convert {os.path.basename(fpath)}: {e}")
             except Exception as e: logging.error(f"Preview download error: {e}")
             
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            for _ in executor.map(_download_single, urls):
-                if not self._is_running: 
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        try:
+            futures = [executor.submit(_download_single, url) for url in urls]
+            while futures and self._is_running:
+                done, not_done = concurrent.futures.wait(futures, timeout=0.2)
+                if not self._is_running:
+                    for f in not_done: f.cancel()
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
+                futures = list(not_done)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 # ==========================================
 # Model Download Worker (Restored)

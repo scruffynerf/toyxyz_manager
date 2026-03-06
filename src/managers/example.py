@@ -248,47 +248,50 @@ class ExampleTabWidget(QWidget):
         if QMessageBox.question(self, "Delete File", msg, QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
 
-        # [Fix] Release file handle & Retry logic
+        # [Fix] Release file handle & Retry logic via QTimer
         try:
             # 0. Cancel any pending metadata extraction for this file
             if self.metadata_worker:
                 self.metadata_worker.cancel_path(path)
-                # Wait briefly for current operation to finish
-                QApplication.processEvents()
-                import time
-                time.sleep(0.15)
             
             # 1. Unload image from UI (CLEANUP)
             self.lbl_img.clear_memory()
-            QApplication.processEvents()
             
             # 2. Clear from ImageLoader cache (important!)
             if self.image_loader:
                 self.image_loader.remove_from_cache(path)
             
-            # 3. Simple delete with retry
-            if os.path.exists(path):
-                import time
-                for attempt in range(3):
-                    try:
-                        os.remove(path)
-                        break
-                    except PermissionError as pe:
-                        if attempt < 2:
-                            time.sleep(0.1)  # 100ms delay
-                        else:
-                            raise pe
+            # 3. Async delete with retry using QTimer to avoid locking UI
+            def try_delete(attempt=0):
+                if not os.path.exists(path):
+                    self.load_examples(self.current_item_path)
+                    self.status_message.emit("File permanently deleted.")
+                    return
+                try:
+                    os.remove(path)
+                    self.load_examples(self.current_item_path)
+                    self.status_message.emit("File permanently deleted.")
+                except PermissionError as pe:
+                    if attempt < 4:
+                        from PySide6.QtCore import QTimer
+                        QTimer.singleShot(100, lambda: try_delete(attempt + 1))
+                    else:
+                        logging.warning(f"Delete failed after retries: {pe}")
+                        QMessageBox.warning(self, "Error", f"Failed to delete file after retries:\n{pe}")
+                        if os.path.exists(path):
+                            self.lbl_img.set_media(path)
+                except Exception as e:
+                    logging.warning(f"Delete failed: {e}")
+                    QMessageBox.warning(self, "Error", f"Failed to delete file:\n{e}")
+                    if os.path.exists(path):
+                        self.lbl_img.set_media(path)
 
-            self.load_examples(self.current_item_path)
-            self.status_message.emit("File permanently deleted.")
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, try_delete)
             
         except Exception as e:
-             # Restore image if failed (try to reload what we can)
-             logging.warning(f"Delete failed: {e}")
-             QMessageBox.warning(self, "Error", f"Failed to delete file:\n{e}")
-             # Try to reload current image back if it still exists
-             if os.path.exists(path):
-                self.lbl_img.set_media(path)
+             logging.warning(f"Delete preparation failed: {e}")
+             QMessageBox.warning(self, "Error", f"Failed to prepare deletion:\n{e}")
 
     def open_example_folder(self):
         if not self.example_images: return

@@ -85,13 +85,27 @@ class BaseManagerWidget(QWidget):
         self.app_settings = app_settings or {}
         self.current_path = None
         self.active_scanners = []
-        self._zombie_workers = [] # [Fix] Hold references to stopped workers until deleteLater completes
+        self._cancelled_workers = set() # [Fix] Safely hold references to stopping workers
         self.image_loader_thread = ImageLoader()
         self.image_loader_thread.start()
         self._init_base_ui()
         self.update_combo_list()
         
     # ... (rest of class)
+
+    def _cancel_worker(self, worker, disconnect_signals=False):
+        if not worker: return
+        try:
+            if worker.isRunning():
+                worker.stop()
+                if disconnect_signals:
+                    try: worker.batch_ready.disconnect()
+                    except Exception: pass
+                    try: worker.finished.disconnect()
+                    except Exception: pass
+                self._cancelled_workers.add(worker)
+                worker.finished.connect(lambda w=worker: self._cancelled_workers.discard(w))
+        except RuntimeError: pass
 
     def get_debug_info(self) -> Dict[str, Any]:
         """Returns debug statistics for the manager."""
@@ -279,45 +293,17 @@ class BaseManagerWidget(QWidget):
         path = os.path.normpath(raw_path)
         
         if hasattr(self, 'indexing_scanner'):
-             try:
-                 if self.indexing_scanner.isRunning():
-                     self.indexing_scanner.stop()
-                     self.indexing_scanner.wait()
-                 # [Fix] Keep Python reference alive so deleteLater doesn't segfault
-                 self._zombie_workers.append(self.indexing_scanner)
-             except RuntimeError: pass
+            self._cancel_worker(self.indexing_scanner)
 
         # [Fix] Stop all active partial scanners to prevent zombie signals
         if hasattr(self, 'active_scanners'):
             for scanner in list(self.active_scanners):
-                try:
-                    if scanner.isRunning():
-                        scanner.stop()
-                        scanner.wait()
-                    self._zombie_workers.append(scanner)
-                except RuntimeError: pass
+                self._cancel_worker(scanner)
             self.active_scanners.clear()
 
         # [Fix] Stop main UI scanner if running
         if hasattr(self, 'scanner'):
-            try:
-                if self.scanner.isRunning():
-                    self.scanner.stop()
-                    self.scanner.wait()
-                try: self.scanner.batch_ready.disconnect()
-                except RuntimeError: pass
-                try: self.scanner.finished.disconnect()
-                except RuntimeError: pass
-                # [Fix] Keep Python reference alive
-                self._zombie_workers.append(self.scanner)
-            except RuntimeError: pass
-            
-        # [Fix] Clean up dead zombies from previous cycles
-        self._zombie_workers = [w for w in self._zombie_workers if w and not w.isRunning() and not w.isFinished()] 
-        # Actually isFinished() will be True, so the above filter might drop them too fast. 
-        # Just keep a bounded list to avoid memory leaks but guarantee survival across the event cycle.
-        if len(self._zombie_workers) > 20:
-            self._zombie_workers = self._zombie_workers[-20:]
+            self._cancel_worker(self.scanner, disconnect_signals=True)
 
         self.tree.clear()
         self.filter_edit.clear()
@@ -568,19 +554,10 @@ class BaseManagerWidget(QWidget):
         root_path = os.path.normpath(raw_path)
 
         if hasattr(self, 'scanner'):
-            try:
-                if self.scanner.isRunning(): self.scanner.stop()
-            except RuntimeError: pass
+            self._cancel_worker(self.scanner, disconnect_signals=True)
 
         if hasattr(self, 'search_worker'):
-            try:
-                if self.search_worker.isRunning():
-                    self.search_worker.stop()
-                    self.search_worker.wait()
-                try: self.search_worker.finished.disconnect()
-                except RuntimeError: pass
-                self._zombie_workers.append(self.search_worker)
-            except RuntimeError: pass
+            self._cancel_worker(self.search_worker, disconnect_signals=True)
 
         self.tree.clear()
         
