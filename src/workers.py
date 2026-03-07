@@ -217,6 +217,17 @@ class JsonLoadWorker(QThread):
                 links = graph_data.get("links", [])
                 groups = graph_data.get("groups", [])
                 
+                # [Fix] Scrub node internal link references for ComfyUI Paste logic
+                # ComfyUI's LiteGraph uses the 'links' list for creating new links on paste.
+                # If nodes retain their old 'link' IDs, LiteGraph fails to wire them up properly.
+                for node in nodes:
+                    if "inputs" in node and isinstance(node["inputs"], list):
+                        for inp in node["inputs"]:
+                            if isinstance(inp, dict) and "link" in inp: inp["link"] = None
+                    if "outputs" in node and isinstance(node["outputs"], list):
+                        for out in node["outputs"]:
+                            if isinstance(out, dict) and "links" in out: out["links"] = []
+                
                 # Link conversion
                 def convert_links(links_list):
                     formatted = []
