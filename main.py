@@ -38,9 +38,10 @@ logging.basicConfig(
 # ... PySide6 imports ...
 
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 from src.main_window import ModelManagerWindow
+from src.core import MISSING_DEPENDENCIES
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -70,6 +71,13 @@ if __name__ == "__main__":
             sys.exit(1)
             
         sys.excepthook = crash_handler
+
+    if MISSING_DEPENDENCIES:
+        msg = "The following required libraries are missing:\n" + "\n".join([f"- {dep}" for dep in MISSING_DEPENDENCIES])
+        msg += "\n\nPlease install them by running:\n"
+        msg += f"pip install {' '.join(MISSING_DEPENDENCIES)}"
+        QMessageBox.critical(None, "Missing Dependencies", msg)
+        sys.exit(1)
 
     window = ModelManagerWindow(debug_mode=debug_mode)
     window.show()

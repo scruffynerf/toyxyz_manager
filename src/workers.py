@@ -58,7 +58,7 @@ class ImageLoader(QThread):
         
         # [Cache] LRU Cache
         self.cache = OrderedDict()
-        self.CACHE_SIZE = 2
+        self.CACHE_SIZE = 20
     
     def __del__(self):
         try:
@@ -166,6 +166,107 @@ class ImageLoader(QThread):
                         self.cache.move_to_end(path)
                         if len(self.cache) > self.CACHE_SIZE:
                             self.cache.popitem(last=False)
+
+import base64
+
+# ==========================================
+# JSON Async Loader
+# ==========================================
+class JsonLoadWorker(QThread):
+    json_loaded = Signal(str, dict) # raw_text, parsed_dict
+    json_error = Signal(str)
+    clipboard_data = Signal(str, str, int, int) # b64_encoded, minified_json, node_count, link_count
+
+    def __init__(self, filepath, load_graph=True, for_clipboard=False):
+        super().__init__()
+        self.filepath = filepath
+        self.load_graph = load_graph
+        self.for_clipboard = for_clipboard
+        self._is_running = True
+
+    def stop(self):
+        self._is_running = False
+
+    def run(self):
+        try:
+            with open(self.filepath, 'r', encoding='utf-8', errors='replace') as f:
+                raw_text = f.read()
+
+            if not self._is_running: return
+
+            try:
+                # orjson is natively extremely fast compared to built-in json
+                json_data = json.loads(raw_text)
+            except Exception as e:
+                self.json_error.emit(f"JSON Parse Error: {e}")
+                return
+
+            if not self._is_running: return
+
+            if not self.for_clipboard:
+                # Flow: Load into TextEdit & Graph Viewer
+                if not self.load_graph: json_data = {}
+                self.json_loaded.emit(raw_text, json_data)
+            else:
+                # Flow: Clipboard format processing
+                graph_data = json_data
+                if "nodes" not in json_data and "workflow" in json_data:
+                     graph_data = json_data["workflow"]
+
+                nodes = graph_data.get("nodes", [])
+                links = graph_data.get("links", [])
+                groups = graph_data.get("groups", [])
+                
+                # Link conversion
+                def convert_links(links_list):
+                    formatted = []
+                    for link in links_list:
+                        if isinstance(link, list):
+                            if len(link) >= 5:
+                                formatted.append({
+                                    "id": link[0], "origin_id": link[1], "origin_slot": link[2],
+                                    "target_id": link[3], "target_slot": link[4], "type": link[5] if len(link) > 5 else "*"
+                                })
+                            else: formatted.append(link)
+                        else: formatted.append(link)
+                    return formatted
+
+                formatted_links = convert_links(links)
+
+                subgraphs_data = graph_data.get("subgraphs", [])
+                if not subgraphs_data:
+                    definitions = graph_data.get("definitions", {})
+                    if isinstance(definitions, dict):
+                        subgraphs_data = definitions.get("subgraphs", [])
+                if not isinstance(subgraphs_data, list): subgraphs_data = []
+
+                formatted_subgraphs = []
+                for sg in subgraphs_data:
+                    if isinstance(sg, dict):
+                        new_sg = sg.copy()
+                        if "links" in new_sg: new_sg["links"] = convert_links(new_sg["links"])
+                        formatted_subgraphs.append(new_sg)
+                    else:
+                        formatted_subgraphs.append(sg)
+
+                payload = {
+                    "nodes": nodes,
+                    "links": formatted_links,
+                    "groups": groups,
+                    "reroutes": graph_data.get("reroutes", []),
+                    "subgraphs": formatted_subgraphs,
+                }
+
+                if not self._is_running: return
+
+                minified_json = json.dumps(payload).decode('utf-8') if hasattr(json.dumps(payload), 'decode') else json.dumps(payload)
+                encoded_bytes = base64.b64encode(minified_json.encode('utf-8'))
+                encoded_str = encoded_bytes.decode('utf-8')
+
+                self.clipboard_data.emit(encoded_str, minified_json, len(nodes), len(links))
+
+        except Exception as e:
+            self.json_error.emit(str(e))
 
 # ==========================================
 # Thumbnail Worker

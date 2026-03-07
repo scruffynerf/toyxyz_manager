@@ -1,21 +1,27 @@
 import sys
 import os
-import json
+import json as std_json
 import gzip
 import re
 import logging
 from typing import Dict, Any, Optional
+
+try:
+    import orjson as json
+except ImportError:
+    import json as json
 
 from PySide6.QtCore import QMutex
 
 # ==========================================
 # Feature Flags & Imports
 # ==========================================
+MISSING_DEPENDENCIES = []
+
 try:
     import requests
 except ImportError:
-    logging.critical("'requests' library is missing. Run: pip install requests")
-    sys.exit(1)
+    MISSING_DEPENDENCIES.append("requests")
 
 HAS_PILLOW = False
 try:
@@ -24,6 +30,7 @@ try:
     HAS_PILLOW = True
 except ImportError:
     logging.warning("Pillow library is missing. pip install pillow")
+    MISSING_DEPENDENCIES.append("pillow")
 
 HAS_MARKDOWN = False
 try:
@@ -133,7 +140,7 @@ def load_config(config_path=CONFIG_FILE) -> Dict[str, Any]:
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+                data = std_json.load(f)
         except Exception as e:
             logging.error(f"Failed to load config: {e}")
             return {}
@@ -163,7 +170,7 @@ def save_config(data: Dict[str, Any], config_path=CONFIG_FILE):
     """Saves the configuration dict to JSON file."""
     try:
         with open(config_path, "w", encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            std_json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logging.error(f"Failed to save config: {e}")
         raise e

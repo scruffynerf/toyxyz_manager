@@ -21,10 +21,12 @@ from ..core import (
 from ..ui_components import SmartMediaWidget, ZoomWindow, TaskMonitorWidget
 from ..ui.workflow_viewer import WorkflowGraphViewer
 from .example import ExampleTabWidget
-from ..workers import ImageLoader
+from ..workers import ImageLoader, JsonLoadWorker
 
 try:
-    import markdown
+    import orjson as json
+except ImportError:
+    import json
 except ImportError:
     pass
 
@@ -146,24 +148,29 @@ class WorkflowManagerWidget(BaseManagerWidget):
         
         self.preview_lbl.set_media(preview_path)
         
-        # Load Raw JSON
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                raw_text = f.read()
-                self.txt_raw.setText(raw_text)
-                
-                # Load Graph Preview
-                if hasattr(self, 'graph_viewer'):
-                     try:
-                         json_data = json.loads(raw_text)
-                         self.graph_viewer.load_workflow(json_data)
-                     except Exception as e:
-                         self.graph_viewer.clear_graph()
-        except Exception as e:
-            self.txt_raw.setText(f"Error reading file: {e}")
+        # Load Raw JSON & Graph asynchronously
+        self.txt_raw.setText("Loading JSON data...")
+        if hasattr(self, 'json_worker'):
+            self.json_worker.stop()
+            self.json_worker.wait()
+            
+        self.json_worker = JsonLoadWorker(path, load_graph=True)
+        self.json_worker.json_loaded.connect(self._on_json_load_success)
+        self.json_worker.json_error.connect(self._on_json_load_error)
+        self.json_worker.start()
 
         # Load Note (Standardized)
         self.load_content_data(path)
+
+    def _on_json_load_success(self, raw_text, json_data):
+        self.txt_raw.setText(raw_text)
+        if hasattr(self, 'graph_viewer') and json_data:
+             self.graph_viewer.load_workflow(json_data)
+
+    def _on_json_load_error(self, err_msg):
+        self.txt_raw.setText(f"Error reading file: {err_msg}")
+        if hasattr(self, 'graph_viewer'):
+            self.graph_viewer.clear_graph()
 
 
 
@@ -177,128 +184,42 @@ class WorkflowManagerWidget(BaseManagerWidget):
             QMessageBox.warning(self, "Warning", "No workflow selected.")
             return
 
-        try:
-            with open(self.current_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+        # Use async worker for clipboard serialization
+        if hasattr(self, 'json_worker'):
+            self.json_worker.stop()
+            self.json_worker.wait()
             
-            # 1. Validation & Extraction
-            raw_json = json.loads(content)
-            
-            # [Fix] Detect if workflow data is wrapped (e.g. "workflow": { ... } or root)
-            # Some exported files might wrap the graph in a "workflow" key (especially from API saves or specific tools)
-            graph_data = raw_json
-            if "nodes" not in raw_json and "workflow" in raw_json:
-                 graph_data = raw_json["workflow"]
+        self.json_worker = JsonLoadWorker(self.current_path, load_graph=False, for_clipboard=True)
+        self.json_worker.clipboard_data.connect(self._on_clipboard_data_ready)
+        self.json_worker.json_error.connect(self._on_json_load_error_toast)
+        self.json_worker.start()
+        self.show_status_message("Preparing payload...", 2000)
 
+    def _on_clipboard_data_ready(self, encoded_str, minified_json, node_count, link_count):
+        # Use the exact HTML wrapper format akin to ComfyNodeBuilder
+        html_data = (
+            "<html><body>"
+            "<!--StartFragment-->"
+            f'<meta charset="utf-8"><div><span data-metadata="{encoded_str}"></span></div>'
+            "<!--EndFragment-->"
+            "</body></html>"
+        )
+        
+        # 3. Set Clipboard with MimeData
+        from PySide6.QtCore import QMimeData
+        mime_data = QMimeData()
+        mime_data.setText(minified_json) # Fallback to JSON text
+        mime_data.setHtml(html_data) # For ComfyUI (HTML)
+        
+        clipboard = QApplication.clipboard()
+        clipboard.setMimeData(mime_data)
+        
+        self.task_monitor.log_message(f"Copied to clipboard: {os.path.basename(self.current_path)}")
+        msg = f"Workflow copied! ({node_count} nodes, {link_count} links) Paste in ComfyUI."
+        self.show_status_message(msg, 3000)
 
-                 
-            nodes = graph_data.get("nodes", [])
-            links = graph_data.get("links", [])
-            groups = graph_data.get("groups", [])
-            config = graph_data.get("config", {})
-            extra = graph_data.get("extra", {})
-            version = graph_data.get("version", 0.4)
-            
-            # [Fix] Helper function to convert links (Array -> Dict)
-            def convert_links(links_list):
-                formatted = []
-                for link in links_list:
-                    # Standard Link: [id, origin_id, origin_slot, target_id, target_slot, type]
-                    if isinstance(link, list):
-                        if len(link) >= 5:
-                            formatted.append({
-                                "id": link[0],
-                                "origin_id": link[1],
-                                "origin_slot": link[2],
-                                "target_id": link[3],
-                                "target_slot": link[4],
-                                "type": link[5] if len(link) > 5 else "*"
-                            })
-                        else:
-                            # Too short, probably invalid or weird format. Keep as is.
-                            formatted.append(link)
-                    else:
-                        # Already dict or unknown (keep as is)
-                        formatted.append(link)
-                return formatted
-
-            # 1. Convert Main Links
-            formatted_links = convert_links(links)
-            
-            # 2. valid subgraphs extraction (Ensure it's a list)
-            # [Fix] Check both root 'subgraphs' and 'definitions.subgraphs' (Found in recent ComfyUI saves)
-            subgraphs_data = graph_data.get("subgraphs", [])
-            if not subgraphs_data:
-                definitions = graph_data.get("definitions", {})
-                if isinstance(definitions, dict):
-                    subgraphs_data = definitions.get("subgraphs", [])
-            
-            if not isinstance(subgraphs_data, list): subgraphs_data = []
-
-            # 3. Recursively Convert Links in Subgraphs
-            # Subgraphs have their own 'links' array which must also be converted.
-            formatted_subgraphs = []
-            for sg in subgraphs_data:
-                if isinstance(sg, dict):
-                    # Deep copy to avoid mutating original if needed, but here we just replace 'links'
-                    new_sg = sg.copy()
-                    if "links" in new_sg:
-                        new_sg["links"] = convert_links(new_sg["links"])
-                    formatted_subgraphs.append(new_sg)
-                else:
-                    formatted_subgraphs.append(sg)
-
-            # Debug Log
-            self.task_monitor.log_message(f"Extracting: {len(nodes)} nodes, {len(formatted_links)} links, {len(formatted_subgraphs)} subgraphs")
-            
-            # Construct payload
-            # [Fix] Strictly minimal payload for "Paste" support.
-            # Removing 'config', 'extra', 'version' to prevent "Load Workflow" behavior or conflicts.
-            # [Update] Added 'reroutes' and 'subgraphs' to match ComfyUI clipboard format exactly.
-            payload = {
-                "nodes": nodes,
-                "links": formatted_links,
-                "groups": groups,
-                "reroutes": graph_data.get("reroutes", []),
-                "subgraphs": formatted_subgraphs,
-            }
-            
-
-
-            # 2. Prepare Data for ComfyUI (HTML + Base64)
-            # [Fix] Removing separators to ensure standard spacing compatibility, though slightly larger.
-            minified_json = json.dumps(payload) 
-            encoded_bytes = base64.b64encode(minified_json.encode('utf-8'))
-            encoded_str = encoded_bytes.decode('utf-8')
-            
-            # Use the exact HTML wrapper format akin to ComfyNodeBuilder
-            html_data = (
-                "<html><body>"
-                "<!--StartFragment-->"
-                f'<meta charset="utf-8"><div><span data-metadata="{encoded_str}"></span></div>'
-                "<!--EndFragment-->"
-                "</body></html>"
-            )
-            
-            # 3. Set Clipboard with MimeData
-            mime_data = QMimeData()
-            mime_data.setText(minified_json) # Fallback to JSON text
-            mime_data.setHtml(html_data) # For ComfyUI (HTML)
-            
-            clipboard = QApplication.clipboard()
-            clipboard.setMimeData(mime_data)
-            
-            self.task_monitor.log_message(f"Copied to clipboard: {os.path.basename(self.current_path)}")
-            
-            # [Update] Use status bar message instead of popup
-            msg = f"Workflow copied! ({len(nodes)} nodes, {len(links)} links) Paste in ComfyUI."
-            self.show_status_message(msg, 3000)
-            
-        except json.JSONDecodeError:
-             self.show_status_message("Error: Invalid JSON format.", 3000)
-        except Exception as e:
-            self.show_status_message(f"Error: {e}", 3000)
-
+    def _on_json_load_error_toast(self, err_msg):
+        self.show_status_message(f"Error prep: {err_msg}", 3000)
     def replace_workflow_content(self):
         """
         [New Feature] Replace the content of the currently selected workflow file 
