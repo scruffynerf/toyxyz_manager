@@ -10,6 +10,8 @@ The toyxyz manager is a model, workflow, and prompt management tool designed to 
 ---
 ## Update
 
+2026/03/08 - Example filtering and search functionality added. Gallery search functionality added. Model/workflow/prompt move functionality added. Cache structure improved (cache needs to be regenerated).
+
 2026/02/26 - Add workflow template mode : Added a Template Mode checkbox to the bottom of the left tree view in the Workflow tab. When enabled, it shows only paths that contain workflows. This can be used to quickly find and manage example template workflows in custom node folders.
 
 ---
