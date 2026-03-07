@@ -423,11 +423,16 @@ class PromptManagerWidget(BaseManagerWidget):
         self.btn_remove_file = QPushButton("🗑️ Remove")
         self.btn_remove_file.setToolTip("Permanently delete the selected prompt file")
         self.btn_remove_file.clicked.connect(self.remove_prompt_file)
+
+        self.btn_move_file = QPushButton("📦 Move")
+        self.btn_move_file.setToolTip("Move selected prompt file(s) to another folder")
+        self.btn_move_file.clicked.connect(self.move_prompt_files)
         
         hbox.addWidget(self.btn_new_file, 1) # Expand
         hbox.addWidget(self.btn_open_folder, 0) # Fixed size
         hbox.addWidget(self.btn_remove_file, 1) # Expand
         hbox.addWidget(self.btn_rename_file, 1) # Expand
+        hbox.addWidget(self.btn_move_file, 1) # Expand
         
         layout.addWidget(btn_container)
 
@@ -534,6 +539,65 @@ class PromptManagerWidget(BaseManagerWidget):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error during delete: {e}")
+
+    def move_prompt_files(self):
+        """
+        Moves the selected prompt file(s) to a new target directory within the current root.
+        """
+        selected_items = self.tree.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Warning", "No item selected to move.")
+            return
+
+        name = self.folder_combo.currentText()
+        if not name: return
+        data = self.directories.get(name)
+        raw_path = data.get("path") if isinstance(data, dict) else data
+        root_path = os.path.normpath(raw_path)
+
+        target_dir = QFileDialog.getExistingDirectory(self, "Select Target Directory", root_path)
+        if not target_dir: return
+        
+        target_dir = os.path.normpath(target_dir)
+
+        # Ensure target is inside root
+        if os.path.commonpath([root_path, target_dir]) != root_path:
+            QMessageBox.critical(self, "Error", "Cannot move files outside the selected root directory.")
+            return
+
+        # Unload resources
+        self.tab_example.unload_current_examples()
+        self.tab_note.set_text("")
+        QApplication.processEvents()
+
+        total_moved = 0
+        all_errors = []
+
+        for item in selected_items:
+            if item.data(0, Qt.UserRole) == "DUMMY": continue
+            item_path = item.data(0, Qt.UserRole)
+            if not item_path or not os.path.exists(item_path): continue
+            
+            # Ensure image loader isn't holding it
+            if hasattr(self, 'image_loader_thread'):
+                self.image_loader_thread.remove_from_cache(item_path)
+
+            success, moved_count, errors = self.move_associated_files(item_path, target_dir)
+            total_moved += moved_count
+            if errors:
+                all_errors.extend(errors)
+
+        if all_errors:
+            msg = "Completed with errors:\n" + "\n".join(all_errors)
+            QMessageBox.warning(self, "Move Incomplete", msg)
+        else:
+            self.show_status_message(f"Moved {total_moved} files/dirs successfully.")
+            
+        self.current_json_path = None
+        self.current_prompt_data = []
+        self.prompt_list.clear()
+        self.refresh_list()
+
 
     def open_current_folder(self):
         item = self.tree.currentItem()

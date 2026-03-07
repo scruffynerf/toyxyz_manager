@@ -297,8 +297,13 @@ class WorkflowManagerWidget(BaseManagerWidget):
         btn_rename.setToolTip("Rename the selected workflow and its resources")
         btn_rename.clicked.connect(self.rename_workflow)
         
+        btn_move = QPushButton("📦 Move")
+        btn_move.setToolTip("Move selected item(s) to another folder")
+        btn_move.clicked.connect(self.move_workflows)
+        
         btn_layout.addWidget(btn_remove)
         btn_layout.addWidget(btn_rename)
+        btn_layout.addWidget(btn_move)
         layout.addLayout(btn_layout)
 
     def _on_show_workflow_only_changed(self, state):
@@ -403,6 +408,69 @@ class WorkflowManagerWidget(BaseManagerWidget):
         else:
             self.show_status_message(f"Renamed {renamed_count} files/dirs.")
         
+        self.current_path = None
+        self.refresh_list()
+
+    def move_workflows(self):
+        """
+        Moves the selected workflow(s) to a new target directory within the current root.
+        """
+        selected_items = self.tree.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Warning", "No item selected to move.")
+            return
+
+        name = self.folder_combo.currentText()
+        if not name: return
+        data = self.directories.get(name)
+        raw_path = data.get("path") if isinstance(data, dict) else data
+        root_path = os.path.normpath(raw_path)
+
+        target_dir = QFileDialog.getExistingDirectory(self, "Select Target Directory", root_path)
+        if not target_dir: return
+        
+        target_dir = os.path.normpath(target_dir)
+
+        # Ensure target is inside root
+        if os.path.commonpath([root_path, target_dir]) != root_path:
+            QMessageBox.critical(self, "Error", "Cannot move files outside the selected root directory.")
+            return
+
+        # Unload resources
+        if hasattr(self, 'preview_lbl'): 
+            self.preview_lbl.clear_memory()
+            self.preview_lbl.set_media(None)
+        if hasattr(self, 'graph_viewer'):
+            self.graph_viewer.clear_graph()
+        if hasattr(self, 'tab_example'): 
+            self.tab_example.unload_current_examples()
+            
+        QApplication.processEvents()
+
+        total_moved = 0
+        all_errors = []
+
+        for item in selected_items:
+            # We don't move "DUMMY" items or loading indicators
+            if item.data(0, Qt.UserRole) == "DUMMY": continue
+            item_path = item.data(0, Qt.UserRole)
+            if not item_path or not os.path.exists(item_path): continue
+            
+            # Ensure image loader isn't holding it
+            if hasattr(self, 'image_loader_thread'):
+                self.image_loader_thread.remove_from_cache(item_path)
+
+            success, moved_count, errors = self.move_associated_files(item_path, target_dir)
+            total_moved += moved_count
+            if errors:
+                all_errors.extend(errors)
+
+        if all_errors:
+            msg = "Completed with errors:\n" + "\n".join(all_errors)
+            QMessageBox.warning(self, "Move Incomplete", msg)
+        else:
+            self.show_status_message(f"Moved {total_moved} files/dirs successfully.")
+            
         self.current_path = None
         self.refresh_list()
 

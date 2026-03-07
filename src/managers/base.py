@@ -931,6 +931,83 @@ class BaseManagerWidget(QWidget):
         except Exception as e:
             return False, 0, [f"Critical error during rename: {e}"]
 
+    def move_associated_files(self, file_path, target_dir):
+        """
+        [New Feature] Moves a main file/folder, its cache directory, 
+        and associated sibling files (like thumbnails or previews) to a new target directory.
+        Returns: (success_bool, moved_count, error_messages_list)
+        """
+        import shutil
+        from ..core import calculate_structure_path
+        
+        if not file_path or not os.path.exists(file_path):
+            return False, 0, ["Selection does not exist."]
+
+        if not target_dir or not os.path.exists(target_dir):
+            return False, 0, ["Target directory does not exist."]
+
+        # Ensure we are not moving a folder into itself
+        if os.path.isdir(file_path):
+            if os.path.commonpath([file_path, target_dir]) == file_path:
+                return False, 0, ["Cannot move a folder into itself."]
+
+        filename = os.path.basename(file_path)
+        new_path = os.path.join(target_dir, filename)
+        
+        if os.path.exists(new_path):
+            return False, 0, [f"'{filename}' already exists in target directory."]
+
+        moved_count = 0
+        errors = []
+        is_folder = os.path.isdir(file_path)
+
+        try:
+            # 1. Move Cache Directory
+            old_cache_dir = calculate_structure_path(file_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            new_cache_dir = calculate_structure_path(new_path, self.get_cache_dir(), self.directories, mode=self.get_mode())
+            
+            if os.path.exists(old_cache_dir):
+                if os.path.exists(new_cache_dir):
+                     errors.append(f"Target cache directory already exists: {os.path.basename(new_cache_dir)}")
+                else:
+                    try:
+                        os.makedirs(os.path.dirname(new_cache_dir), exist_ok=True)
+                        shutil.move(old_cache_dir, new_cache_dir)
+                    except Exception as e:
+                        errors.append(f"Failed to move cache: {e}")
+
+            # 2. Move Main Item & Sibling Files
+            if is_folder:
+                try:
+                    shutil.move(file_path, target_dir)
+                    moved_count += 1
+                except Exception as e:
+                    errors.append(f"Failed to move folder {filename}: {e}")
+            else:
+                old_base = os.path.splitext(filename)[0]
+                dir_path = os.path.dirname(file_path)
+                
+                for f in os.listdir(dir_path):
+                    f_path = os.path.join(dir_path, f)
+                    if not os.path.isfile(f_path): continue
+                    
+                    if f.startswith(old_base):
+                        suffix = f[len(old_base):]
+                        if suffix.startswith("."):
+                            new_f_path = os.path.join(target_dir, f)
+                            try:
+                                shutil.move(f_path, new_f_path)
+                                moved_count += 1
+                                if hasattr(self, 'image_loader_thread'):
+                                    self.image_loader_thread.remove_from_cache(f_path)
+                            except Exception as e:
+                                errors.append(f"Failed to move {f}: {e}")
+
+            return len(errors) == 0, moved_count, errors
+            
+        except Exception as e:
+            return False, 0, [f"Critical error during move: {e}"]
+
     # Re-implementing helper methods to be used by subclasses
     
     def copy_media_to_cache(self, file_path, target_relative_path):

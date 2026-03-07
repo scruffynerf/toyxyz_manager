@@ -6,7 +6,7 @@ import gc
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, 
-    QGridLayout, QGroupBox, QLineEdit, QSplitter, QFileDialog, QMessageBox, QApplication, QTabWidget
+    QGridLayout, QGroupBox, QLineEdit, QSplitter, QFileDialog, QMessageBox, QApplication, QTabWidget, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal
 from PIL import Image
@@ -16,6 +16,7 @@ from ..core import calculate_structure_path, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS,
 from ..ui_components import SmartMediaWidget, ZoomWindow
 from ..ui.metadata_widget import MetadataViewerWidget
 from ..workers import LocalMetadataWorker
+from ..metadata import validate_metadata_type
 
 class ExampleTabWidget(QWidget):
     status_message = Signal(str)
@@ -110,6 +111,11 @@ class ExampleTabWidget(QWidget):
         for b in [btn_add, btn_del, btn_open, btn_save_meta]:
             b.setFixedWidth(40)
             tools_layout.addWidget(b)
+            
+        self.chk_has_prompt = QCheckBox("Has Prompt/Workflow")
+        self.chk_has_prompt.setChecked(False)
+        self.chk_has_prompt.toggled.connect(lambda: self.load_examples(self.current_item_path))
+        tools_layout.addWidget(self.chk_has_prompt)
         
         tools_layout.addStretch()
         img_layout.addLayout(tools_layout)
@@ -159,7 +165,23 @@ class ExampleTabWidget(QWidget):
         
         if os.path.exists(preview_dir):
             valid_exts = tuple(list(IMAGE_EXTENSIONS) + list(VIDEO_EXTENSIONS))
-            self.example_images = [os.path.join(preview_dir, f) for f in os.listdir(preview_dir) if f.lower().endswith(valid_exts)]
+            all_files = [os.path.join(preview_dir, f) for f in os.listdir(preview_dir) if f.lower().endswith(valid_exts)]
+            
+            if hasattr(self, 'chk_has_prompt') and self.chk_has_prompt.isChecked():
+                filtered = []
+                for f in all_files:
+                    if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS:
+                        continue
+                    try:
+                        with Image.open(f) as img:
+                            if validate_metadata_type(img):
+                                filtered.append(f)
+                    except Exception:
+                        pass
+                self.example_images = filtered
+            else:
+                self.example_images = all_files
+                
             self.example_images.sort()
             
             # Attempt to restore selection
