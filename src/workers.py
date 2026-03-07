@@ -516,6 +516,164 @@ class FileSearchWorker(QThread):
             self.finished.emit(results)
 
 # ==========================================
+# Async Metadata Search Worker (Progressive)
+# ==========================================
+def _mp_search_chunk(chunk_paths, query, search_field, has_prompt_only):
+    from .metadata import validate_metadata_type, standardize_metadata
+    from PIL import Image
+    import os
+
+    results = []
+    for filepath in chunk_paths:
+        try:
+            with Image.open(filepath) as img:
+                pass_chk = True
+                if has_prompt_only and not validate_metadata_type(img):
+                    pass_chk = False
+                    
+                pass_txt = True
+                if query:
+                    target_text = ""
+                    if search_field == "all":
+                        target_text = str(img.info).lower()
+                    elif search_field == "workflow":
+                        target_text = str(img.info.get("workflow", img.info.get("prompt", ""))).lower()
+                    else:
+                        meta = standardize_metadata(img)
+                        if search_field == "positive":
+                            target_text = str(meta.get("prompts", {}).get("positive", "")).lower()
+                        elif search_field == "negative":
+                            target_text = str(meta.get("prompts", {}).get("negative", "")).lower()
+                        elif search_field == "settings":
+                            target_text = str(meta.get("main", {})).lower()
+                        elif search_field == "resources":
+                            target_text = str(meta.get("model", {})).lower()
+                            
+                    if query not in target_text:
+                        pass_txt = False
+                        
+                if pass_chk and pass_txt:
+                    results.append(filepath)
+        except Exception:
+            pass
+            
+    return results
+
+class AsyncMetadataSearchWorker(QThread):
+    batch_ready = Signal(list)  # Emits list of (file_path, size_bytes, mtime_tuple)
+    progress_update = Signal(int, int) # (scanned_count, total_count)
+    finished = Signal()
+    
+    def __init__(self, target_path, query, search_field, has_prompt_only, extensions, chunk_size=20):
+        super().__init__()
+        self.setObjectName("AsyncMetaSearchThread")
+        self.target_path = target_path
+        self.query = query.lower().strip()
+        self.search_field = search_field.lower()
+        self.has_prompt_only = has_prompt_only
+        self.extensions = extensions
+        self.chunk_size = chunk_size
+        self._is_running = True
+
+    def stop(self):
+        self._is_running = False
+
+    def run(self):
+        import concurrent.futures
+        
+        # 1. Fast pre-scan to collect all matching candidate files
+        target_files = []
+        count_stack = [(self.target_path, 0)]
+        count_visited = set()
+        if os.path.exists(self.target_path):
+            count_visited.add(os.path.realpath(self.target_path))
+            
+        while count_stack:
+            if not self._is_running: return
+            current_dir, depth = count_stack.pop()
+            try:
+                with os.scandir(current_dir) as it:
+                    for entry in it:
+                        if not self._is_running: return
+                        if entry.is_dir():
+                            real_path = os.path.realpath(entry.path)
+                            if real_path not in count_visited:
+                                count_visited.add(real_path)
+                                count_stack.append((entry.path, depth + 1))
+                        elif entry.is_file():
+                            ext = os.path.splitext(entry.name)[1].lower()
+                            if ext in self.extensions and ext not in VIDEO_EXTENSIONS:
+                                target_files.append(entry.path)
+            except OSError:
+                pass
+                
+        if not self._is_running: return
+        
+        total_files = len(target_files)
+        if total_files == 0:
+            if self._is_running: self.finished.emit()
+            return
+            
+        # 2. Chunking
+        # Dynamically calculate chunk size to balance between overhead and process count.
+        cores = os.cpu_count() or 2
+        chunk_size = max(50, total_files // (cores * 2))
+        chunks = [target_files[i:i + chunk_size] for i in range(0, total_files, chunk_size)]
+        
+        # 3. Process Pool with Safety Core Limits (50% ~ 75%)
+        # Base CPU count parsing
+        max_workers = max(1, int(cores * 0.75))
+        scanned_count = 0
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_mp_search_chunk, chunk, self.query, self.search_field, self.has_prompt_only): len(chunk)
+                for chunk in chunks
+            }
+            
+            for future in concurrent.futures.as_completed(futures):
+                if not self._is_running:
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception as e:
+                        logging.debug(f"[AsyncMetadataSearchWorker] Force shutdown error: {e}")
+                    return
+                
+                chunk_len = futures[future]
+                scanned_count += chunk_len
+                self.progress_update.emit(scanned_count, total_files)
+                
+                try:
+                    results = future.result()
+                    if results:
+                        buffer = []
+                        for filepath in results:
+                            try:
+                                st = os.stat(filepath)
+                                buffer.append({
+                                    "name": os.path.basename(filepath),
+                                    "path": filepath,
+                                    "size": format_size(st.st_size),
+                                    "date": time.strftime('%Y-%m-%d', time.localtime(st.st_mtime)),
+                                    "raw_size": st.st_size,
+                                    "raw_date": st.st_mtime
+                                })
+                                
+                                if len(buffer) >= self.chunk_size:
+                                    if self._is_running: self.batch_ready.emit(buffer)
+                                    buffer = []
+                            except OSError:
+                                pass
+                        
+                        if buffer and self._is_running:
+                            self.batch_ready.emit(buffer)
+                except Exception as e:
+                    logging.debug(f"[AsyncMetadataSearchWorker] Process chunk error: {e}")
+                    
+        if self._is_running:
+            self.finished.emit()
+
+# ==========================================
 # Region: Network & Metadata Workers
 # ==========================================
 

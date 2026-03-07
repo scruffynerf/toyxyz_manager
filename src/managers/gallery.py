@@ -3,7 +3,7 @@ import json
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTextBrowser, 
-    QTabWidget, QLabel
+    QTabWidget, QLabel, QLineEdit, QComboBox, QCheckBox, QTreeWidgetItem
 )
 from PySide6.QtCore import Qt
 from .base import BaseManagerWidget
@@ -14,6 +14,8 @@ from ..workers import LocalMetadataWorker
 
 class GalleryManagerWidget(BaseManagerWidget):
     def __init__(self, directories, app_settings, parent=None):
+        self.parent_window = parent
+        
         # [CRITICAL] STRICT FILTERING: Only allow directories with mode="gallery"
         gallery_dirs = {k: v for k, v in directories.items() if v.get("mode") == "gallery"}
         
@@ -66,8 +68,32 @@ class GalleryManagerWidget(BaseManagerWidget):
 
     def init_right_panel(self):
         """
-        Right Panel: Metadata Tabs
+        Right Panel: Metadata Tabs & Meta Search
         """
+        # [New] Async Metadata Search UI
+        search_layout = QHBoxLayout()
+        self.cmb_meta_field = QComboBox()
+        self.cmb_meta_field.addItems(["All", "Positive", "Negative", "Settings", "Resources", "Workflow"])
+        self.cmb_meta_field.setToolTip("Select metadata field to search")
+        
+        self.txt_meta_query = QLineEdit()
+        self.txt_meta_query.setPlaceholderText("Search metadata...")
+        self.txt_meta_query.returnPressed.connect(self.search_metadata)
+        
+        self.chk_has_prompt = QCheckBox("Has Prompt")
+        
+        self.btn_clear_search = QPushButton("🔙")
+        self.btn_clear_search.setToolTip("Clear search and show all")
+        self.btn_clear_search.setFixedWidth(30)
+        self.btn_clear_search.clicked.connect(self.clear_search_filter)
+        
+        search_layout.addWidget(self.cmb_meta_field)
+        search_layout.addWidget(self.txt_meta_query)
+        search_layout.addWidget(self.chk_has_prompt)
+        search_layout.addWidget(self.btn_clear_search)
+        
+        self.right_layout.addLayout(search_layout)
+        
         self.right_tabs = QTabWidget()
         
         # Tab 1: Example (Metadata Visualizer)
@@ -155,6 +181,86 @@ class GalleryManagerWidget(BaseManagerWidget):
             except OSError as e:
                 logging.error(f"Failed to open file: {e}")
 
+    # === Async Progressive Search Implementation ===
+    def search_metadata(self):
+        query = self.txt_meta_query.text().strip()
+        search_field = self.cmb_meta_field.currentText()
+        has_prompt = self.chk_has_prompt.isChecked()
+        
+        if not query and not has_prompt:
+            self.refresh_list()
+            return
+            
+        name = self.folder_combo.currentText()
+        data = self.directories.get(name)
+        if not data: return
+        raw_path = data.get("path") if isinstance(data, dict) else data
+        target_dir = os.path.normpath(raw_path)
+        
+        if not target_dir or not os.path.isdir(target_dir): return
+        
+        # Stop existing base scanners
+        if hasattr(self, 'indexing_scanner'):
+             self._cancel_worker(self.indexing_scanner)
+        if hasattr(self, 'active_scanners'):
+             for scanner in list(self.active_scanners):
+                 self._cancel_worker(scanner)
+             self.active_scanners.clear()
+             
+        # Stop previous search worker
+        if hasattr(self, 'meta_search_worker') and self.meta_search_worker:
+            self._cancel_worker(self.meta_search_worker)
+            
+        self.tree.clear()
+        self.show_status_message(f"Searching metadata for '{query}' in {search_field}...")
+        
+        from ..workers import AsyncMetadataSearchWorker
+        self.meta_search_worker = AsyncMetadataSearchWorker(
+            target_path=target_dir,
+            query=query,
+            search_field=search_field,
+            has_prompt_only=has_prompt,
+            extensions=self.extensions,
+            chunk_size=15
+        )
+        self.meta_search_worker.batch_ready.connect(self._on_meta_search_batch_ready)
+        self.meta_search_worker.progress_update.connect(self._on_meta_search_progress)
+        self.meta_search_worker.finished.connect(lambda: self.show_status_message("Metadata search complete."))
+        self.meta_search_worker.start()
+        
+        if not hasattr(self, 'active_scanners'):
+            self.active_scanners = []
+        self.active_scanners.append(self.meta_search_worker)
+
+    def _on_meta_search_progress(self, current, total):
+        pct = int((current / total) * 100) if total > 0 else 0
+        self.show_status_message(f"Searching metadata [{self.txt_meta_query.text()}]... {pct}% ({current}/{total})")
+
+    def _on_meta_search_batch_ready(self, files_buffer):
+        """Called progressively as items are found in the background."""
+        items = []
+        for f in files_buffer:
+            ext = os.path.splitext(f["name"])[1]
+            item = QTreeWidgetItem([f["name"], f["size"], f["date"], ext])
+            item.setData(0, Qt.UserRole, f["path"])
+            item.setData(0, Qt.UserRole + 1, "file")
+            item.setData(1, Qt.UserRole, f["raw_size"])
+            item.setData(2, Qt.UserRole, f["raw_date"])
+            items.append(item)
+            
+        if items:
+            self.tree.addTopLevelItems(items)
+            
+    def clear_search_filter(self):
+        self.txt_meta_query.clear()
+        self.chk_has_prompt.setChecked(False)
+        
+        if hasattr(self, 'meta_search_worker') and self.meta_search_worker:
+            self._cancel_worker(self.meta_search_worker)
+            self.meta_search_worker = None
+            
+        self.refresh_list()
+
     def collect_active_workers(self):
         """Override to include the gallery-specific metadata worker."""
         # Get base workers (image loader, scanners, etc.)
@@ -164,6 +270,8 @@ class GalleryManagerWidget(BaseManagerWidget):
         try:
             if hasattr(self, 'meta_worker') and self.meta_worker and self.meta_worker.isRunning():
                 heavy_workers.append(self.meta_worker)
+            if hasattr(self, 'meta_search_worker') and self.meta_search_worker and self.meta_search_worker.isRunning():
+                heavy_workers.append(self.meta_search_worker)
         except RuntimeError: pass
         
         return workers, thumb_workers, heavy_workers
