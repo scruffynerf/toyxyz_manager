@@ -1,12 +1,53 @@
 import logging
 
-def parse_webui_parameters(text: str) -> str:
+from typing import Dict, Any
+
+def parse_webui_parameters(text: str) -> Dict[str, Any]:
     """
-    Parses A1111's parameters string.
-    Currently just returns the raw string as it's unstructured text, 
-    but this placeholder allows future structured parsing.
+    Parses A1111's parameters string into a structured dictionary.
+    Returns:
+       {
+           "positive": "...",
+           "negative": "...",
+           "Steps": "20",
+           ...
+       }
     """
-    return text
+    result = {
+        "positive": "",
+        "negative": ""
+    }
+    
+    if not text: return result
+    
+    parts = text.split("Steps: ")
+    if len(parts) < 2:
+        result["positive"] = text.strip()
+        return result
+        
+    prompt_part = parts[0].strip()
+    param_part = "Steps: " + parts[1].strip()
+    
+    # Check for negative prompt
+    neg_idx = prompt_part.find("Negative prompt: ")
+    if neg_idx != -1:
+        result["positive"] = prompt_part[:neg_idx].strip()
+        result["negative"] = prompt_part[neg_idx + len("Negative prompt: "):].strip()
+    else:
+        result["positive"] = prompt_part
+        
+    # Split parameters block
+    import re
+    # Simple regex to split by ', Key:' formatting without splitting inside brackets
+    param_pairs = re.split(r',\s*(?=[A-Z][a-zA-Z0-9\s]*:\s)', param_part)
+    for p in param_pairs:
+        p_split = p.split(":", 1)
+        if len(p_split) == 2:
+            key = p_split[0].strip()
+            val = p_split[1].strip()
+            result[key] = val
+            
+    return result
 
 def extract_webui_parameters(img) -> str:
     """

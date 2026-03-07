@@ -6,7 +6,7 @@ import gc
 import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, 
-    QGridLayout, QGroupBox, QLineEdit, QSplitter, QFileDialog, QMessageBox, QApplication, QTabWidget, QCheckBox
+    QGridLayout, QGroupBox, QLineEdit, QSplitter, QFileDialog, QMessageBox, QApplication, QTabWidget, QCheckBox, QComboBox
 )
 from PySide6.QtCore import Qt, Signal
 from PIL import Image
@@ -15,8 +15,10 @@ from PIL.PngImagePlugin import PngInfo
 from ..core import calculate_structure_path, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, CACHE_DIR_NAME
 from ..ui_components import SmartMediaWidget, ZoomWindow
 from ..ui.metadata_widget import MetadataViewerWidget
+from ..ui_components import SmartMediaWidget, ZoomWindow
+from ..ui.metadata_widget import MetadataViewerWidget
 from ..workers import LocalMetadataWorker
-from ..metadata import validate_metadata_type
+from ..metadata import validate_metadata_type, standardize_metadata
 
 class ExampleTabWidget(QWidget):
     status_message = Signal(str)
@@ -70,6 +72,28 @@ class ExampleTabWidget(QWidget):
         img_layout = QVBoxLayout(img_widget)
         img_layout.setContentsMargins(0,0,0,0)
         
+        # [New] Metadata Filter Text Box at the very top
+        top_layout = QHBoxLayout()
+        
+        self.cmb_search_field = QComboBox()
+        self.cmb_search_field.addItems(["All", "Positive", "Negative", "Settings", "Resources", "Workflow"])
+        self.cmb_search_field.setToolTip("Select metadata field to search")
+        self.cmb_search_field.currentTextChanged.connect(lambda: self.load_examples(self.current_item_path))
+        
+        self.txt_search_meta = QLineEdit()
+        self.txt_search_meta.setPlaceholderText("Search metadata...")
+        self.txt_search_meta.returnPressed.connect(lambda: self.load_examples(self.current_item_path))
+        
+        self.btn_clear_search = QPushButton("🔙")
+        self.btn_clear_search.setToolTip("Clear search filter (Back to all)")
+        self.btn_clear_search.setFixedWidth(30)
+        self.btn_clear_search.clicked.connect(self.clear_search_filter)
+        
+        top_layout.addWidget(self.cmb_search_field)
+        top_layout.addWidget(self.txt_search_meta)
+        top_layout.addWidget(self.btn_clear_search)
+        img_layout.addLayout(top_layout)
+        
         self.lbl_img = SmartMediaWidget(loader=self.image_loader, player_type="example")
         self.lbl_img.setMinimumSize(100, 100)
         self.lbl_img.clicked.connect(self.on_example_click)
@@ -116,7 +140,6 @@ class ExampleTabWidget(QWidget):
         self.chk_has_prompt.setChecked(False)
         self.chk_has_prompt.toggled.connect(lambda: self.load_examples(self.current_item_path))
         tools_layout.addWidget(self.chk_has_prompt)
-        
         tools_layout.addStretch()
         img_layout.addLayout(tools_layout)
         self.splitter.addWidget(img_widget)
@@ -136,6 +159,12 @@ class ExampleTabWidget(QWidget):
         self._clear_meta()
         self.lbl_count.setText("0/0")
         self.lbl_wf_status.setText("")
+        
+    def clear_search_filter(self):
+        """Clear search query and refresh."""
+        if hasattr(self, 'txt_search_meta'):
+            self.txt_search_meta.clear()
+        self.load_examples(self.current_item_path)
         
     def load_examples(self, path, target_filename=None, custom_cache_path=None):
         # Detect if this is a "reload" or "switch"
@@ -167,17 +196,59 @@ class ExampleTabWidget(QWidget):
             valid_exts = tuple(list(IMAGE_EXTENSIONS) + list(VIDEO_EXTENSIONS))
             all_files = [os.path.join(preview_dir, f) for f in os.listdir(preview_dir) if f.lower().endswith(valid_exts)]
             
-            if hasattr(self, 'chk_has_prompt') and self.chk_has_prompt.isChecked():
+            # [Filter Logic] Check for Query & Checkbox
+            query = ""
+            if hasattr(self, 'txt_search_meta'):
+                query = self.txt_search_meta.text().strip().lower()
+                
+            has_prompt_only = False
+            if hasattr(self, 'chk_has_prompt'):
+                has_prompt_only = self.chk_has_prompt.isChecked()
+                
+            search_field = "all"
+            if hasattr(self, 'cmb_search_field'):
+                search_field = self.cmb_search_field.currentText().lower()
+            
+            if has_prompt_only or query:
                 filtered = []
                 for f in all_files:
                     if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS:
-                        continue
+                        continue # Cannot parse meta from video headers directly here yet
+                    
                     try:
                         with Image.open(f) as img:
-                            if validate_metadata_type(img):
+                            # Condition 1: Checkbox
+                            pass_chk = True
+                            if has_prompt_only and not validate_metadata_type(img):
+                                pass_chk = False
+                                
+                            # Condition 2: Text Search
+                            pass_txt = True
+                            if query:
+                                target_text = ""
+                                if search_field == "all":
+                                    target_text = str(img.info).lower()
+                                elif search_field == "workflow":
+                                    target_text = str(img.info.get("workflow", img.info.get("prompt", ""))).lower()
+                                else:
+                                    # Use standardize_metadata for specific fields
+                                    meta = standardize_metadata(img)
+                                    if search_field == "positive":
+                                        target_text = str(meta.get("prompts", {}).get("positive", "")).lower()
+                                    elif search_field == "negative":
+                                        target_text = str(meta.get("prompts", {}).get("negative", "")).lower()
+                                    elif search_field == "settings":
+                                        target_text = str(meta.get("main", {})).lower()
+                                    elif search_field == "resources":
+                                        target_text = str(meta.get("model", {})).lower()
+                                
+                                if query not in target_text:
+                                    pass_txt = False
+                                    
+                            if pass_chk and pass_txt:
                                 filtered.append(f)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.debug(f"[Example Filter] Error filtering image {f}: {e}")
                 self.example_images = filtered
             else:
                 self.example_images = all_files

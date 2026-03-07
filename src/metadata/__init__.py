@@ -175,6 +175,23 @@ def standardize_metadata(img) -> Dict[str, Any]:
                          res["etc"][k] = v
              else:
                  res["type"] = "a1111"
+                 from .webui import parse_webui_parameters
+                 data = parse_webui_parameters(raw_params)
+                 
+                 res["main"]["steps"] = data.get("Steps")
+                 res["main"]["seed"] = data.get("Seed")
+                 res["main"]["cfg"] = data.get("CFG scale")
+                 res["main"]["sampler"] = data.get("Sampler")
+                 
+                 res["model"]["checkpoint"] = data.get("Model")
+                 
+                 res["prompts"]["positive"] = data.get("positive", "")
+                 res["prompts"]["negative"] = data.get("negative", "")
+                 
+                 exclude = ["Steps", "Seed", "CFG scale", "Sampler", "Model", "positive", "negative"]
+                 for k, v in data.items():
+                     if k not in exclude:
+                         res["etc"][k] = v
          except Exception as e:
              logging.debug(f"[Metadata] Error identifying A1111/SimpAI parameters format: {e}")
              res["type"] = "a1111"
