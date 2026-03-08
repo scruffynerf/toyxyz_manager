@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QSpinBox, QListWidget, QInputDialog, QGridLayout, QGroupBox, 
     QApplication, QMessageBox, QComboBox, QTextBrowser, QTextEdit, QCheckBox
 )
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QMimeData, QSize, QBuffer, QByteArray
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QMimeData, QSize, QBuffer, QByteArray, QFile, QIODevice
 from PySide6.QtGui import QPixmap, QDrag, QBrush, QColor, QImageReader, QMovie
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -278,12 +278,15 @@ class SmartMediaWidget(QWidget):
                 self.lbl_image.setText("File too large")
                 return
 
-            # [Fix] Read file to memory first to release file handle immediately
-            # This is important for delete/rename operations
-            with open(path, "rb") as f:
-                raw_data = f.read()
+            # [Fix] Read file to memory first to release file handle immediately using QFile
+            qfile = QFile(path)
+            if qfile.open(QIODevice.ReadOnly):
+                byte_array = qfile.readAll()
+                qfile.close()
+            else:
+                self.lbl_image.setText("File Read Error")
+                return
             
-            byte_array = QByteArray(raw_data)
             buffer = QBuffer(byte_array)
             buffer.open(QBuffer.ReadOnly)
 

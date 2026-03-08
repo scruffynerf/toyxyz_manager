@@ -9,7 +9,7 @@ import concurrent.futures
 from collections import deque, OrderedDict
 
 # [Infra] PySide6 Imports
-from PySide6.QtCore import QThread, Signal, QMutex, QWaitCondition, Qt, QBuffer, QByteArray
+from PySide6.QtCore import QThread, Signal, QMutex, QWaitCondition, Qt, QBuffer, QByteArray, QFile, QIODevice
 from PySide6.QtGui import QImage, QImageReader
 
 # [Refactor] Services
@@ -137,23 +137,34 @@ class ImageLoader(QThread):
                             if f_size > MAX_FILE_LOAD_BYTES:
                                  logging.warning(f"Skipping large file ({f_size} bytes): {path}")
                             else:
-                                reader = QImageReader(path)
-                                reader.setAutoTransform(True)
-                                
-                                if target_width:
-                                    orig_size = reader.size()
-                                    if orig_size.isValid() and (orig_size.width() > target_width or orig_size.height() > target_width):
-                                         reader.setScaledSize(orig_size.scaled(target_width, target_width, Qt.KeepAspectRatio))
-                                
-                                loaded = reader.read()
-                                if not loaded.isNull():
-                                    if not loaded.hasAlphaChannel():
-                                         image = loaded.convertToFormat(QImage.Format_RGB888)
-                                    else:
-                                         image = loaded
-                                
-                                reader.setDevice(None)
-                                del reader
+                                # [Optimize] Prevent File Lock & Python overhead by using QFile
+                                qfile = QFile(path)
+                                if qfile.open(QIODevice.ReadOnly):
+                                    byte_array = qfile.readAll()
+                                    qfile.close()
+
+                                    buffer = QBuffer(byte_array)
+                                    buffer.open(QIODevice.ReadOnly)
+
+                                    reader = QImageReader(buffer)
+                                    reader.setAutoTransform(True)
+                                    
+                                    if target_width:
+                                        orig_size = reader.size()
+                                        if orig_size.isValid() and (orig_size.width() > target_width or orig_size.height() > target_width):
+                                             reader.setScaledSize(orig_size.scaled(target_width, target_width, Qt.KeepAspectRatio))
+                                    
+                                    loaded = reader.read()
+                                    if not loaded.isNull():
+                                        if not loaded.hasAlphaChannel():
+                                             image = loaded.convertToFormat(QImage.Format_RGB888)
+                                        else:
+                                             image = loaded
+
+                                    buffer.close()
+                                    
+                                else:
+                                    logging.warning(f"Could not open file for reading: {path}")
                                 
                 except Exception as e: 
                     logging.warning(f"Failed to load image {path}: {e}")
