@@ -910,6 +910,23 @@ class SettingsDialog(QDialog):
         self.chk_show_duplicates.setChecked(self.settings.get("show_duplicates", False))
         form_layout.addRow("", self.chk_show_duplicates)
         
+        # [Feature] Thumbnail Size Setting
+        self.cmb_thumb_size = QComboBox()
+        self.cmb_thumb_size.addItem("Off (Fastest)", 0)
+        self.cmb_thumb_size.addItem("Small (64px)", 64)
+        self.cmb_thumb_size.addItem("Medium (96px)", 96)
+        self.cmb_thumb_size.addItem("Large (128px)", 128)
+        
+        # Select current setting 
+        current_thumb_size = self.settings.get("thumbnail_size", 64)
+        idx = self.cmb_thumb_size.findData(current_thumb_size)
+        if idx >= 0:
+            self.cmb_thumb_size.setCurrentIndex(idx)
+        else:
+            self.cmb_thumb_size.setCurrentIndex(1) # Default to 64px
+            
+        form_layout.addRow("Thumbnail Size:", self.cmb_thumb_size)
+        
         layout.addWidget(grp_gen)
         
         
@@ -1081,6 +1098,7 @@ class SettingsDialog(QDialog):
             
         self.settings["cache_path"] = self.entry_cache.text().strip()
         self.settings["show_duplicates"] = self.chk_show_duplicates.isChecked()
+        self.settings["thumbnail_size"] = self.cmb_thumb_size.currentData()
 
         
         self.result_data = {

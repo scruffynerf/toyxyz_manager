@@ -71,6 +71,7 @@ MAX_FILE_LOAD_MB = 200
 MAX_FILE_LOAD_BYTES = MAX_FILE_LOAD_MB * 1024 * 1024
 
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"} 
+THUMBNAIL_SIZES = {0, 64, 96, 128}  # Configurable thumbnail sizes (0 = off)
 
 # ==========================================
 # Helper Classes

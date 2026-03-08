@@ -58,7 +58,7 @@ class ImageLoader(QThread):
         
         # [Cache] LRU Cache
         self.cache = OrderedDict()
-        self.CACHE_SIZE = 20
+        self.CACHE_SIZE = 100 # [Optimize] Increased cache size for tree thumbnails
     
     def __del__(self):
         try:
@@ -67,20 +67,27 @@ class ImageLoader(QThread):
         except RuntimeError as e:
             logging.debug(f"[ImageLoader] RuntimeError during cleanup: {e}")
 
-    def load_image(self, path, target_width=None):
+    def load_image(self, path, target_width=None, clear_queue=True, resolve_preview=False):
+        cache_key = f"{path}::{target_width}"
         with QMutexWithLocker(self.mutex):
              # Check cache first
-             if path in self.cache:
-                 self.cache.move_to_end(path) # Mark as recently used
-                 self.image_loaded.emit(path, self.cache[path])
+             if cache_key in self.cache:
+                 self.cache.move_to_end(cache_key) # Mark as recently used
+                 self.image_loaded.emit(path, self.cache[cache_key])
                  return
         
              if os.path.isdir(path):
                  return # Skip directories
 
-             self.queue.clear() # Already locked
-             self.queue.append((path, target_width))
+             if clear_queue:
+                 self.queue.clear() # already locked
+             self.queue.append((path, target_width, resolve_preview))
              self.condition.wakeOne()
+             
+    def clear_thumbnail_queue(self):
+        with QMutexWithLocker(self.mutex):
+             from .core import THUMBNAIL_SIZES
+             self.queue = deque([item for item in self.queue if item[1] not in THUMBNAIL_SIZES])
             
     def clear_queue(self):
         with QMutexWithLocker(self.mutex):
@@ -88,8 +95,9 @@ class ImageLoader(QThread):
 
     def remove_from_cache(self, path):
         with QMutexWithLocker(self.mutex):
-             if path in self.cache:
-                 del self.cache[path]
+             keys_to_remove = [k for k in list(self.cache.keys()) if str(k).startswith(f"{path}::")]
+             for k in keys_to_remove:
+                 del self.cache[k]
 
     def stop(self):
         logging.debug(f"[ImageLoader] Stop requested. is_running={self._is_running}")
@@ -119,26 +127,57 @@ class ImageLoader(QThread):
             
             path = None
             target_width = None
+            resolve_preview = False
             if self.queue:
-                path, target_width = self.queue.popleft()
+                item_data = self.queue.popleft()
+                path = item_data[0]
+                target_width = item_data[1]
+                resolve_preview = item_data[2] if len(item_data) > 2 else False
                 logging.debug(f"[ImageLoader] Popped: {path}")
             
             self.mutex.unlock()
 
             if path:
+                # [Optimize] Resolve preview path in background thread, not UI thread
+                actual_path = path
+                if resolve_preview:
+                    from .core import PREVIEW_EXTENSIONS, VIDEO_EXTENSIONS
+                    ext = os.path.splitext(path)[1].lower()
+                    if ext in VIDEO_EXTENSIONS:
+                        # Skip video files entirely
+                        self.image_loaded.emit(path, QImage())
+                        continue
+                    elif ext in {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}:
+                        actual_path = path  # Image file IS the thumbnail
+                    else:
+                        # Model file: search for associated preview
+                        base = os.path.splitext(path)[0]
+                        found = False
+                        for p_ext in PREVIEW_EXTENSIONS:
+                            if p_ext in VIDEO_EXTENSIONS:
+                                continue
+                            p = base + p_ext
+                            if os.path.exists(p):
+                                actual_path = p
+                                found = True
+                                break
+                        if not found:
+                            # No preview file exists, emit empty
+                            self.image_loaded.emit(path, QImage())
+                            continue
                 try:
                     image = QImage()
-                    if os.path.exists(path):
-                        ext = os.path.splitext(path)[1].lower()
+                    if os.path.exists(actual_path):
+                        ext = os.path.splitext(actual_path)[1].lower()
                         if ext in {'.mp4', '.webm', '.mkv', '.avi', '.mov', '.gif'}:
                             pass 
                         else:
-                            f_size = os.path.getsize(path)
+                            f_size = os.path.getsize(actual_path)
                             if f_size > MAX_FILE_LOAD_BYTES:
-                                 logging.warning(f"Skipping large file ({f_size} bytes): {path}")
+                                 logging.warning(f"Skipping large file ({f_size} bytes): {actual_path}")
                             else:
                                 # [Optimize] Prevent File Lock & Python overhead by using QFile
-                                qfile = QFile(path)
+                                qfile = QFile(actual_path)
                                 if qfile.open(QIODevice.ReadOnly):
                                     byte_array = qfile.readAll()
                                     qfile.close()
@@ -164,17 +203,18 @@ class ImageLoader(QThread):
                                     buffer.close()
                                     
                                 else:
-                                    logging.warning(f"Could not open file for reading: {path}")
+                                    logging.warning(f"Could not open file for reading: {actual_path}")
                                 
                 except Exception as e: 
-                    logging.warning(f"Failed to load image {path}: {e}")
+                    logging.warning(f"Failed to load image {actual_path}: {e}")
 
                 self.image_loaded.emit(path, image)
                 
                 with QMutexWithLocker(self.mutex):
                     if not image.isNull():
-                        self.cache[path] = image
-                        self.cache.move_to_end(path)
+                        cache_key = f"{path}::{target_width}"
+                        self.cache[cache_key] = image
+                        self.cache.move_to_end(cache_key)
                         if len(self.cache) > self.CACHE_SIZE:
                             self.cache.popitem(last=False)
 

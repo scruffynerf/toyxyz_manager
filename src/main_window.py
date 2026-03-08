@@ -209,6 +209,13 @@ class ModelManagerWindow(QMainWindow):
             self.prompt_manager.set_directories(self.directories)
             if hasattr(self, 'gallery_manager'): self.gallery_manager.set_directories(self.directories)
             
+            # [Feature] Apply thumbnail size change immediately
+            for mgr in [self.model_manager, self.workflow_manager, self.prompt_manager]:
+                if hasattr(mgr, 'apply_thumbnail_size'):
+                    mgr.apply_thumbnail_size()
+            if hasattr(self, 'gallery_manager') and hasattr(self.gallery_manager, 'apply_thumbnail_size'):
+                self.gallery_manager.apply_thumbnail_size()
+            
     def closeEvent(self, event):
         # Propagate close to managers to stop threads
         managers = []

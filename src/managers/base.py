@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QLineEdit, QMessageBox, QAbstractItemView,
     QFileDialog, QApplication, QFormLayout
 )
-from PySide6.QtCore import Qt, QThread, QSize
+from PySide6.QtCore import Qt, QThread, QSize, QTimer
+from PySide6.QtGui import QIcon, QPixmap, QImage
 
 from ..workers import FileScannerWorker, ThumbnailWorker, FileSearchWorker, ImageLoader
 from ..ui_components import ZoomWindow, MarkdownNoteWidget
@@ -86,8 +87,20 @@ class BaseManagerWidget(QWidget):
         self.current_path = None
         self.active_scanners = []
         self._cancelled_workers = set() # [Fix] Safely hold references to stopping workers
+        self._thumb_pending = {} # [Optimize] Track pending thumbnails
         self.image_loader_thread = ImageLoader()
+        self.image_loader_thread.image_loaded.connect(self._on_thumbnail_loaded)
         self.image_loader_thread.start()
+        
+        # [Optimize] Thumbnail lazy loading debounce timer
+        self.thumb_scroll_timer = QTimer(self)
+        self.thumb_scroll_timer.setSingleShot(True)
+        self.thumb_scroll_timer.setInterval(100) # [Optimize] Reduced debounce for snappier response
+        self.thumb_scroll_timer.timeout.connect(self._load_visible_thumbnails)
+        
+        # [Feature] Thumbnail Size Setting
+        self.thumb_size = int(self.app_settings.get("thumbnail_size", 64))
+        
         self._init_base_ui()
         self.update_combo_list()
         
@@ -192,6 +205,8 @@ class BaseManagerWidget(QWidget):
         
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Name", "Size", "Date", "Format"])
+        if self.thumb_size > 0:
+            self.tree.setIconSize(QSize(self.thumb_size, self.thumb_size)) # [Optimize] Set dynamic thumbnail size
         self.tree.setColumnWidth(0, 200) 
         self.tree.setColumnWidth(1, 70)  
         self.tree.setColumnWidth(2, 110) 
@@ -202,6 +217,7 @@ class BaseManagerWidget(QWidget):
         self.tree.sortByColumn(0, Qt.AscendingOrder) # Default sort by Name
         self.tree.itemSelectionChanged.connect(self.on_tree_select)
         self.tree.itemExpanded.connect(self.on_tree_expand)
+        self.tree.verticalScrollBar().valueChanged.connect(self._on_tree_scrolled) # [Optimize] Lazy load hook
         
         left_layout.addLayout(combo_box)
         left_layout.addLayout(search_layout)
@@ -305,6 +321,7 @@ class BaseManagerWidget(QWidget):
         if hasattr(self, 'scanner'):
             self._cancel_worker(self.scanner, disconnect_signals=True)
 
+        self._thumb_pending.clear()
         self.tree.clear()
         self.filter_edit.clear()
         
@@ -379,6 +396,7 @@ class BaseManagerWidget(QWidget):
     def _on_scan_finished(self):
         """Called when INITIAL UI scan is complete."""
         self.tree.setSortingEnabled(True)
+        self._load_visible_thumbnails() # [Optimize] Initial load
         # self.show_status_message(f"Scan complete. {self.tree.topLevelItemCount()} items.")
 
     def _filter_directories_by_extension(self, parent_path, dirs):
@@ -531,6 +549,7 @@ class BaseManagerWidget(QWidget):
              self._populate_item(parent_item, current_path, root_data)
             
              self.tree.setUpdatesEnabled(True)
+             self.thumb_scroll_timer.start() # [Optimize] trigger thumbnail load on expand
              # self.tree.setSortingEnabled(True) # [Optimization] Handled in on_tree_expand finished
         except RuntimeError:
              # "wrapped C/C++ object of type SortableTreeItem has been deleted"
@@ -559,6 +578,7 @@ class BaseManagerWidget(QWidget):
         if hasattr(self, 'search_worker'):
             self._cancel_worker(self.search_worker, disconnect_signals=True)
 
+        self._thumb_pending.clear()
         self.tree.clear()
         
         # Loading Indicator
@@ -627,10 +647,120 @@ class BaseManagerWidget(QWidget):
             item.setData(0, Qt.UserRole + 1, "file")
             item.setData(0, Qt.UserRole + 2, size_bytes)
             item.setData(0, Qt.UserRole + 3, mtime)
+            
+        self._load_visible_thumbnails() # [Optimize] Load search results
 
     def cancel_search(self):
         self.filter_edit.clear()
         self.refresh_list()
+
+    def _on_tree_scrolled(self, value):
+        self.thumb_scroll_timer.start()
+
+    def _load_visible_thumbnails(self):
+        """Lazy load thumbnails for items currently visible in the tree."""
+        if self.thumb_size <= 0: return # [Optimize] Early exit if thumbnails are off
+        if not self.tree.topLevelItemCount(): return
+        
+        # [Optimize] Drop previous trailing thumbnail requests on scroll
+        self.image_loader_thread.clear_thumbnail_queue()
+        self._thumb_pending.clear() # [Fix] Reset pending trackers so dropped items can be re-queued
+        
+        viewport = self.tree.viewport()
+        rect = viewport.rect()
+        
+        visible_items = []
+        item = self.tree.itemAt(rect.topLeft())
+        if not item:
+            for y in range(rect.top(), rect.bottom(), 20):
+                item = self.tree.itemAt(2, y)
+                if item: break
+                
+        while item:
+            rect_item = self.tree.visualItemRect(item)
+            if not rect_item.intersects(rect):
+                if rect_item.top() > rect.bottom():
+                    break
+            else:
+                visible_items.append(item)
+            item = self.tree.itemBelow(item)
+
+        from ..core import VIDEO_EXTENSIONS
+        for item in visible_items:
+            try:
+                item_type = item.data(0, Qt.UserRole + 1)
+                if item_type != "file": continue
+                
+                if not item.icon(0).isNull(): continue
+                
+                path = item.data(0, Qt.UserRole)
+                if not path: continue
+                
+                ext = os.path.splitext(path)[1].lower()
+                if ext in VIDEO_EXTENSIONS:
+                    continue # Skip video thumbnails for performance
+                
+                # [Optimize] Skip if already pending
+                if path not in self._thumb_pending:
+                    self._thumb_pending[path] = []
+                if item not in self._thumb_pending[path]:
+                    self._thumb_pending[path].append(item)
+                    # [Optimize] Delegate file existence check to background thread
+                    self.image_loader_thread.load_image(path, target_width=self.thumb_size, 
+                                                        clear_queue=False, resolve_preview=True)
+            except RuntimeError:
+                pass # Item deleted
+
+    def _on_thumbnail_loaded(self, path, image):
+        if image.isNull(): return
+        items = self._thumb_pending.pop(path, [])
+        if not items: return
+        
+        icon = QIcon(QPixmap.fromImage(image))
+        for item in items:
+            try:
+                if item.treeWidget():
+                    item.setIcon(0, icon)
+                    
+                    # [Fix] Dynamically adjust row height ONLY for items with a thumbnail
+                    fm = self.tree.fontMetrics()
+                    text_w = fm.horizontalAdvance(item.text(0)) if hasattr(fm, 'horizontalAdvance') else fm.boundingRect(item.text(0)).width()
+                    # Add breathing room for text and prevent vertical cropping
+                    item.setSizeHint(0, QSize(text_w + self.thumb_size + 30, self.thumb_size + 6))
+            except RuntimeError:
+                pass
+
+    def apply_thumbnail_size(self):
+        """Apply thumbnail size change from settings without restart."""
+        new_size = int(self.app_settings.get("thumbnail_size", 64))
+        self.thumb_size = new_size
+        
+        if new_size <= 0:
+            self.tree.setIconSize(QSize(0, 0))
+        else:
+            self.tree.setIconSize(QSize(new_size, new_size))
+        
+        # Recursively clear all icons and row heights
+        self._clear_all_icons()
+        self._thumb_pending.clear()
+        self.image_loader_thread.clear_thumbnail_queue()
+        
+        if new_size > 0:
+            self._load_visible_thumbnails()
+
+    def _clear_all_icons(self, parent_item=None):
+        """Recursively clear icons and size hints from all tree items."""
+        count = parent_item.childCount() if parent_item else self.tree.topLevelItemCount()
+        for i in range(count):
+            item = parent_item.child(i) if parent_item else self.tree.topLevelItem(i)
+            if item:
+                try:
+                    item.setIcon(0, QIcon())
+                    item.setSizeHint(0, QSize(-1, -1))
+                    if item.childCount() > 0:
+                        self._clear_all_icons(item)
+                except RuntimeError:
+                    pass
 
     def show_status_message(self, msg, duration=3000):
         if hasattr(self, 'parent_window') and self.parent_window:
